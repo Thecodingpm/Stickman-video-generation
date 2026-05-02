@@ -1,26 +1,75 @@
-/**
- * Editor overlay — draws selection bounding box and handles on top of the canvas.
- * Called AFTER renderFrame() in the RAF loop, only in editor mode.
- */
-
+import { getAnimatedObjectBBox, getSvgObjectBBox } from "./hitTest";
+import type { BoundingBox } from "./hitTest";
+import { applyCameraTransform } from "./camera";
 import type { Camera } from "./camera";
 import type { Scene } from "./sceneManager";
 import type { SelectedObject } from "../store/editorStore";
-import { applyCameraTransform } from "./camera";
-import { getAnimatedObjectBBox, getSvgObjectBBox } from "./hitTest";
 
-const HANDLE_SIZE  = 8;
-const ACCENT_COLOR = "#6366f1";
-const ACCENT_GLOW  = "rgba(99,102,241,0.25)";
+// Draw a single selection box with handles
+function drawSelectionBox(
+  ctx: CanvasRenderingContext2D,
+  box: BoundingBox,
+  isPrimary: boolean,
+  zoom: number,
+) {
+  const { x, y, w, h } = box;
+  const pad = 5 / zoom;
 
-function worldToScreen(
-  wx: number, wy: number,
-  camera: Camera, W: number, H: number,
-): { x: number; y: number } {
-  return {
-    x: Math.round((wx - camera.x) * camera.zoom + W / 2),
-    y: Math.round((wy - camera.y) * camera.zoom + H / 2),
-  };
+  const bx = x - pad, by = y - pad, bw = w + pad * 2, bh = h + pad * 2;
+
+  // Animated dashed border
+  ctx.save();
+  ctx.strokeStyle = isPrimary ? "#6366f1" : "rgba(99,102,241,0.55)";
+  ctx.lineWidth   = 1.5 / zoom;
+  ctx.setLineDash([5 / zoom, 3 / zoom]);
+  ctx.lineDashOffset = -(Date.now() / 80) % (8 / zoom);
+  ctx.beginPath();
+  ctx.rect(bx, by, bw, bh);
+  ctx.stroke();
+
+  if (!isPrimary) { ctx.restore(); return; }
+
+  // Solid inner border
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(99,102,241,0.25)";
+  ctx.lineWidth   = 0.5 / zoom;
+  ctx.beginPath(); ctx.rect(bx + 1/zoom, by + 1/zoom, bw - 2/zoom, bh - 2/zoom); ctx.stroke();
+
+  // 8 corner + edge handles
+  const hs = 7 / zoom;
+  const handles = [
+    [bx,          by         ], [bx + bw/2,   by         ], [bx + bw,     by         ],
+    [bx,          by + bh/2  ],                              [bx + bw,     by + bh/2  ],
+    [bx,          by + bh    ], [bx + bw/2,   by + bh    ], [bx + bw,     by + bh    ],
+  ];
+
+  for (const [hx, hy] of handles) {
+    // Shadow
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.fillRect(hx - hs/2 + 0.5/zoom, hy - hs/2 + 0.5/zoom, hs, hs);
+    // White fill
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
+    // Accent border
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth   = 1.5 / zoom;
+    ctx.strokeRect(hx - hs/2, hy - hs/2, hs, hs);
+  }
+
+  // Label above box
+  ctx.save();
+  ctx.scale(1 / zoom, 1 / zoom);
+  const lx = bx * zoom, ly = (by * zoom) - 6;
+  ctx.fillStyle = "#6366f1";
+  ctx.font      = "bold 10px monospace";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(
+    `${Math.round(x)}, ${Math.round(y)}`,
+    lx, ly,
+  );
+  ctx.restore();
+
+  ctx.restore();
 }
 
 export function drawEditorOverlay(
@@ -30,75 +79,62 @@ export function drawEditorOverlay(
   selected: SelectedObject | null,
   W:        number,
   H:        number,
+  multiSelected?: SelectedObject[],
+  snapGuides?: { x?: number; y?: number },
 ): void {
-  if (!scene || !selected) return;
-
-  // Find the selected object
-  let bbox: { x: number; y: number; w: number; h: number } | null = null;
-
-  if (selected.type === "animated") {
-    const obj = scene.objects.find(o => o.id === selected.id);
-    if (obj) bbox = getAnimatedObjectBBox(obj);
-  } else {
-    const obj = scene.svgObjects?.find(o => o.id === selected.id);
-    if (obj) bbox = getSvgObjectBBox(obj);
-  }
-
-  if (!bbox) return;
-
-  // Convert world bbox corners to screen coords
-  const tl = worldToScreen(bbox.x,          bbox.y,          camera, W, H);
-  const br = worldToScreen(bbox.x + bbox.w, bbox.y + bbox.h, camera, W, H);
-
-  const sx = tl.x, sy = tl.y;
-  const sw = br.x - tl.x, sh = br.y - tl.y;
-  const pad = 6;
+  if (!scene) return;
+  const multi = multiSelected ?? (selected ? [selected] : []);
+  if (multi.length === 0) return;
 
   ctx.save();
+  applyCameraTransform(ctx, camera, W, H);
 
-  // Glow shadow behind box
-  ctx.shadowColor  = ACCENT_GLOW;
-  ctx.shadowBlur   = 12;
-
-  // Dashed selection rect
-  ctx.strokeStyle = ACCENT_COLOR;
-  ctx.lineWidth   = 1.5;
-  ctx.setLineDash([5, 3]);
-  ctx.strokeRect(sx - pad, sy - pad, sw + pad * 2, sh + pad * 2);
-  ctx.setLineDash([]);
-  ctx.shadowBlur = 0;
-
-  // Corner handles
-  const handles = [
-    { x: sx - pad,          y: sy - pad          },
-    { x: sx + sw / 2,       y: sy - pad          },
-    { x: sx + sw + pad,     y: sy - pad          },
-    { x: sx - pad,          y: sy + sh / 2       },
-    { x: sx + sw + pad,     y: sy + sh / 2       },
-    { x: sx - pad,          y: sy + sh + pad     },
-    { x: sx + sw / 2,       y: sy + sh + pad     },
-    { x: sx + sw + pad,     y: sy + sh + pad     },
-  ];
-
-  for (const h of handles) {
-    ctx.fillStyle   = "#fff";
-    ctx.strokeStyle = ACCENT_COLOR;
-    ctx.lineWidth   = 1.5;
-    ctx.beginPath();
-    ctx.rect(h.x - HANDLE_SIZE / 2, h.y - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
-    ctx.fill();
-    ctx.stroke();
+  // Draw non-primary selections first (dimmer)
+  for (const sel of multi) {
+    if (sel.id === selected?.id) continue;
+    const obj = sel.type === "animated"
+      ? scene.objects.find(o => o.id === sel.id)
+      : scene.svgObjects?.find(o => o.id === sel.id);
+    if (!obj) continue;
+    const box = sel.type === "animated"
+      ? getAnimatedObjectBBox(obj as any)
+      : getSvgObjectBBox(obj as any);
+    drawSelectionBox(ctx, box, false, camera.zoom);
   }
 
-  // Label above selection
-  const label = selected.type === "animated"
-    ? (scene.objects.find(o => o.id === selected.id)?.type ?? "object")
-    : "svg path";
+  // Draw primary selection on top
+  if (selected) {
+    const obj = selected.type === "animated"
+      ? scene.objects.find(o => o.id === selected.id)
+      : scene.svgObjects?.find(o => o.id === selected.id);
+    if (obj) {
+      const box = selected.type === "animated"
+        ? getAnimatedObjectBBox(obj as any)
+        : getSvgObjectBBox(obj as any);
+      drawSelectionBox(ctx, box, true, camera.zoom);
+    }
+  }
 
-  ctx.fillStyle    = ACCENT_COLOR;
-  ctx.font         = "10px monospace";
-  ctx.textBaseline = "bottom";
-  ctx.fillText(label, sx - pad, sy - pad - 4);
+  // Snap guide lines (drawn over everything)
+  if (snapGuides) {
+    ctx.save();
+    ctx.strokeStyle = "#f43f5e";
+    ctx.lineWidth   = 1 / camera.zoom;
+    ctx.setLineDash([4 / camera.zoom, 3 / camera.zoom]);
+    if (snapGuides.x !== undefined) {
+      ctx.beginPath();
+      ctx.moveTo(snapGuides.x, -10000);
+      ctx.lineTo(snapGuides.x,  10000);
+      ctx.stroke();
+    }
+    if (snapGuides.y !== undefined) {
+      ctx.beginPath();
+      ctx.moveTo(-10000, snapGuides.y);
+      ctx.lineTo( 10000, snapGuides.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   ctx.restore();
 }

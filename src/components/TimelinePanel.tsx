@@ -7,7 +7,7 @@
  * Click scene header → collapse / expand that scene's tracks
  */
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { sceneStore } from "../store/sceneStore";
 import { editorStore } from "../store/editorStore";
 import type { Scene } from "../core/sceneManager";
@@ -43,8 +43,8 @@ const COLORS = {
 type AnyObj = (AnimatedObject & { _kind: "animated" }) | (SvgPathObject & { _kind: "svg" });
 
 function getObjects(scene: Scene): AnyObj[] {
-  const animated = scene.objects.map(o => ({ ...o, _kind: "animated" as const }));
-  const svg = (scene.svgObjects ?? []).map(o => ({ ...o, _kind: "svg" as const }));
+  const animated = scene.objects.map(o => Object.assign(o, { _kind: "animated" as const }));
+  const svg      = (scene.svgObjects ?? []).map(o => Object.assign(o, { _kind: "svg" as const }));
   return [...animated, ...svg];
 }
 
@@ -100,35 +100,54 @@ function ObjectBar({ obj, scene, pxPerSec, isSelected, height = TRACK_H - 6, onS
   const width = Math.max(obj.duration * pxPerSec, 8);
   const color = obj._kind === "svg" ? COLORS.svg : COLORS.animated;
 
+  const barRef = useRef<HTMLDivElement>(null);
+
   const onMouseDown = (e: React.MouseEvent, kind: "move" | "resize") => {
     e.stopPropagation();
+    e.preventDefault();
     onSelect();
-    dragKind.current = kind;
+    dragKind.current  = kind;
     dragStart.current = { mouseX: e.clientX, startTime: obj.startTime, duration: obj.duration };
 
+    // Live values mutated during drag (no React re-render)
+    let liveStart    = obj.startTime;
+    let liveDuration = obj.duration;
+
     const onMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - dragStart.current.mouseX;
+      const dx     = ev.clientX - dragStart.current.mouseX;
       const dtSecs = dx / pxPerSec;
-      const sceneDur = scene.duration;
-      if (dragKind.current === "move") {
-        const newStart = Math.max(0, Math.min(sceneDur - dragStart.current.duration, dragStart.current.startTime + dtSecs));
-        onUpdate(Math.round(newStart * 100) / 100, dragStart.current.duration);
+
+      if (kind === "move") {
+        liveStart     = Math.max(0, dragStart.current.startTime + dtSecs);
+        obj.startTime = liveStart;
+        if (barRef.current) barRef.current.style.left = `${liveStart * pxPerSec}px`;
       } else {
-        const newDur = Math.max(MIN_DURATION, Math.min(sceneDur - dragStart.current.startTime, dragStart.current.duration + dtSecs));
-        onUpdate(dragStart.current.startTime, Math.round(newDur * 100) / 100);
+        liveDuration = Math.max(MIN_DURATION, dragStart.current.duration + dtSecs);
+        obj.duration = liveDuration;
+        if (barRef.current) barRef.current.style.width = `${Math.max(8, liveDuration * pxPerSec)}px`;
+        // Extend scene duration live during resize drag
+        const clipEnd = obj.startTime + liveDuration;
+        if (clipEnd > scene.duration) {
+          sceneStore.extendSceneDuration(scene.id, clipEnd + 0.5);
+        }
       }
     };
+
     const onUp = () => {
       dragKind.current = null;
+      // Only notify once on release → single React re-render
+      onUpdate(liveStart, liveDuration);
       window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mouseup",   onUp);
     };
+
     window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("mouseup",   onUp);
   };
 
   return (
     <div
+      ref={barRef}
       style={{
         position: "absolute",
         left, width,
@@ -211,6 +230,218 @@ function CompactBand({ objects, scene, pxPerSec, selectedId }: CompactBandProps)
   );
 }
 
+// ── CameraKeyframeRow ─────────────────────────────────────────────────────────
+
+interface CameraKeyframeRowProps {
+  scene: Scene;
+  pxPerSec: number;
+  currentTime: number;
+  selectedKfTime: number | null;
+  onSelect: (time: number) => void;
+  onSeek: (t: number) => void;
+}
+
+interface KfDiamondProps {
+  kf: { time: number; x: number; y: number; zoom: number; easing: string };
+  x: number;
+  isSel: boolean;
+  isHov: boolean;
+  pxPerSec: number;
+  scene: Scene;
+  trackRef: React.RefObject<HTMLDivElement>;
+  onSelect: (time: number) => void;
+  onHover: (time: number | null) => void;
+}
+
+function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, onHover }: KfDiamondProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onSelect(kf.time);
+
+    const startMouseX = e.clientX;
+    const startKfTime = kf.time;
+    const maxTime     = scene.duration;
+    let   latestTime  = startKfTime;
+    let   didDrag     = false;
+
+    // Capture the wrapper DOM node NOW — stable reference for the whole drag
+    const wrapEl = wrapRef.current;
+    if (!wrapEl) return;
+
+    const onMove = (ev: MouseEvent) => {
+      didDrag = true;
+      const dx      = ev.clientX - startMouseX;
+      const dtSecs  = dx / pxPerSec;
+      latestTime    = Math.max(0, Math.min(maxTime, startKfTime + dtSecs));
+      // Direct DOM mutation — no stale ref, no React re-render
+      wrapEl.style.left = `${latestTime * pxPerSec}px`;
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup",   onUp);
+      if (!didDrag) return;
+      // Single store commit on release
+      sceneStore.removeCameraKeyframe(scene.id, startKfTime);
+      sceneStore.addCameraKeyframe(scene.id, {
+        ...kf,
+        time: Math.round(latestTime * 100) / 100,
+      });
+      onSelect(Math.round(latestTime * 100) / 100);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup",   onUp);
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      style={{
+        position: "absolute",
+        left: x,
+        top: "50%",
+        transform: "translate(-50%, -50%)",
+        width: 20, height: 20,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 5, cursor: "ew-resize",
+      }}
+      onMouseEnter={() => onHover(kf.time)}
+      onMouseLeave={() => onHover(null)}
+      onClick={e => { e.stopPropagation(); onSelect(kf.time); }}
+      onMouseDown={onMouseDown}
+    >
+      {/* Diamond shape */}
+      <div style={{
+        width: 10, height: 10,
+        transform: "rotate(45deg)",
+        background: isSel ? "#f59e0b" : isHov ? "#fbbf24" : "rgba(245,158,11,0.6)",
+        border: `1.5px solid ${isSel ? "#fef3c7" : "#f59e0b"}`,
+        borderRadius: 2,
+        boxShadow: isSel ? "0 0 0 3px rgba(245,158,11,0.3)" : "none",
+        transition: "background 0.1s",
+        flexShrink: 0,
+        pointerEvents: "none",
+      }} />
+
+      {/* ✕ delete */}
+      {(isHov || isSel) && (
+        <div
+          style={{
+            position: "absolute",
+            top: -8, right: -8,
+            width: 14, height: 14,
+            borderRadius: "50%",
+            background: "#ef4444",
+            border: "1px solid #fca5a5",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 8, color: "#fff", fontWeight: 700,
+            cursor: "pointer", zIndex: 10, lineHeight: 1,
+          }}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            sceneStore.removeCameraKeyframe(scene.id, kf.time);
+            onHover(null);
+          }}
+          title={`Delete keyframe at ${kf.time.toFixed(2)}s`}
+        >
+          ✕
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CameraKeyframeRow({
+  scene, pxPerSec, currentTime, selectedKfTime, onSelect, onSeek,
+}: CameraKeyframeRowProps) {
+  const totalW = scene.duration * pxPerSec;
+  const [hoveredKfTime, setHoveredKfTime] = useState<number | null>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div style={{
+      display: "flex", height: TRACK_H, alignItems: "center",
+      borderBottom: `1px solid ${COLORS.border}11`,
+      background: "rgba(245,158,11,0.03)",
+    }}>
+      {/* Label */}
+      <div style={{
+        width: LABEL_W, flexShrink: 0, padding: "0 10px",
+        fontSize: 9, color: "#f59e0b", fontFamily: "monospace",
+        display: "flex", alignItems: "center", gap: 4,
+      }}>
+        <span>🎥</span>
+        <span>camera</span>
+      </div>
+
+      {/* Track */}
+      <div
+        ref={trackRef}
+        style={{
+          position: "relative", height: "100%",
+          width: totalW, flexShrink: 0, cursor: "crosshair",
+        }}
+        onDoubleClick={e => {
+          const localT = Math.max(0, Math.min(e.nativeEvent.offsetX / pxPerSec, scene.duration));
+          onSeek(scene.startTime + localT);
+        }}
+      >
+        {/* Baseline */}
+        <div style={{
+          position: "absolute", top: "50%", left: 0, right: 0,
+          height: 1, background: "rgba(245,158,11,0.2)",
+          transform: "translateY(-50%)", pointerEvents: "none",
+        }} />
+
+        {/* Interpolation lines */}
+        {scene.cameraKeyframes.length > 1 &&
+          scene.cameraKeyframes.slice(0, -1).map((kf, i) => {
+            const x1 = kf.time * pxPerSec;
+            const x2 = scene.cameraKeyframes[i + 1].time * pxPerSec;
+            return (
+              <div key={`line-${i}`} style={{
+                position: "absolute",
+                left: x1, top: "50%",
+                width: Math.max(0, x2 - x1), height: 1,
+                background: "rgba(245,158,11,0.35)",
+                transform: "translateY(-50%)",
+                pointerEvents: "none",
+              }} />
+            );
+          })
+        }
+
+        {/* Keyframe diamonds */}
+        {scene.cameraKeyframes.map(kf => {
+          const x     = kf.time * pxPerSec;
+          const isSel = selectedKfTime !== null && Math.abs(selectedKfTime - kf.time) < 0.05;
+          const isHov = hoveredKfTime !== null && Math.abs(hoveredKfTime - kf.time) < 0.05;
+
+          return (
+            <KfDiamond
+              key={kf.time}
+              kf={kf}
+              x={x}
+              isSel={isSel}
+              isHov={isHov}
+              pxPerSec={pxPerSec}
+              scene={scene}
+              trackRef={trackRef}
+              onSelect={onSelect}
+              onHover={setHoveredKfTime}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── SceneSection ──────────────────────────────────────────────────────────────
 
 interface SceneSectionProps {
@@ -220,9 +451,11 @@ interface SceneSectionProps {
   isCollapsed: boolean;
   onToggle: () => void;
   onSeek: (t: number) => void;
+  selectedKfTime: number | null;
+  onSelectKf: (time: number) => void;
 }
 
-function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, onSeek }: SceneSectionProps) {
+function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, onSeek, selectedKfTime, onSelectKf }: SceneSectionProps) {
   const objects = getObjects(scene);
   const pxPerSec = PX_PER_SEC;
   const totalW = scene.duration * pxPerSec;
@@ -231,11 +464,17 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
   const playheadX = Math.min(localTime * pxPerSec, totalW);
 
   const handleUpdate = (obj: AnyObj, startTime: number, duration: number) => {
+    const newStart = Math.max(0, startTime);
+    const newDur   = Math.max(MIN_DURATION, duration);
+    obj.startTime  = newStart;
+    obj.duration   = newDur;
+    // Auto-extend scene if clip goes past end
+    const clipEnd  = newStart + newDur;
+    if (clipEnd > scene.duration) {
+      sceneStore.extendSceneDuration(scene.id, Math.round((clipEnd + 0.5) * 10) / 10);
+    }
     if (obj._kind === "animated") {
-      sceneStore.updateObject(scene.id, obj.id, { startTime, duration });
-    } else {
-      const svgObj = scene.svgObjects?.find(o => o.id === obj.id);
-      if (svgObj) { svgObj.startTime = startTime; svgObj.duration = duration; }
+      sceneStore.updateObject(scene.id, obj.id, { startTime: newStart, duration: newDur });
     }
   };
 
@@ -298,6 +537,15 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
       {/* ── Expanded: full track rows ── */}
       {!isCollapsed && (
         <>
+          {/* ── Camera keyframe row ── */}
+          <CameraKeyframeRow
+            scene={scene}
+            pxPerSec={pxPerSec}
+            currentTime={currentTime}
+            selectedKfTime={selectedKfTime}
+            onSelect={onSelectKf}
+            onSeek={onSeek}
+          />
           {objects.map(obj => (
             <div
               key={obj.id}
@@ -342,17 +590,96 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
         </>
       )}
 
-      {/* ── Playhead overlay (active scene only) ── */}
-      {isActive && (
-        <div style={{
-          position: "absolute",
-          left: LABEL_W + playheadX,
-          top: 0, width: 1, height: "100%",
-          background: COLORS.playhead,
-          pointerEvents: "none",
-          zIndex: 10,
-        }} />
-      )}
+      {/* Playhead — draggable */}
+      {isActive && (() => {
+        const lineRef = { current: null as HTMLDivElement | null };
+        return (
+          <div
+            ref={el => (lineRef.current = el)}
+            style={{
+              position: "absolute",
+              left: LABEL_W + playheadX + 16,
+              top: 0,
+              width: 1,
+              height: "100%",
+              zIndex: 20,
+              cursor: "ew-resize",
+              // Wide invisible hit area so it's easy to grab
+              padding: "0 8px",
+              marginLeft: -8,
+              boxSizing: "content-box",
+              background: "transparent",
+              display: "flex",
+              justifyContent: "center",
+            }}
+            onMouseDown={e => {
+              e.stopPropagation();
+              e.preventDefault();
+
+              // Capture the scene section container — parent of this playhead div
+              const sectionEl = (e.currentTarget as HTMLDivElement).parentElement!;
+              const sectionRect = sectionEl.getBoundingClientRect();
+              
+              const scrollEl   = sectionEl.closest("[data-timeline-scroll]") as HTMLElement;
+              const scrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+              const trackLeft  = sectionRect.left + LABEL_W - scrollLeft + 14;
+
+              console.log("[DRAG ORIGIN]", {
+                sectionRectLeft: sectionRect.left,
+                LABEL_W,
+                trackLeft,
+                mouseX: e.clientX,
+                computedLocalT: (e.clientX - trackLeft) / pxPerSec,
+                expectedLocalT: localTime,
+                diffSeconds:    localTime - (e.clientX - trackLeft) / pxPerSec,
+                diffPixels:     (localTime - (e.clientX - trackLeft) / pxPerSec) * pxPerSec,
+              });
+
+              const onMove = (ev: MouseEvent) => {
+                const rawX    = ev.clientX - trackLeft;
+                const localT  = Math.max(0, Math.min(scene.duration, rawX / pxPerSec));
+                const globalT = scene.startTime + localT;
+
+                // Direct DOM update — no React re-render during drag
+                if (lineRef.current) {
+                  lineRef.current.style.left = `${LABEL_W + localT * pxPerSec + 16}px`;
+                }
+
+                // Throttle store seek to avoid flooding
+                onSeek(globalT);
+              };
+
+              const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup",   onUp);
+              };
+
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup",   onUp);
+            }}
+          >
+            {/* Visible line */}
+            <div style={{
+              width: 1,
+              height: "100%",
+              background: COLORS.playhead,
+              pointerEvents: "none",
+            }} />
+            {/* Diamond handle — easy to see and grab */}
+            <div style={{
+              position: "absolute",
+              top: 6,
+              left: "50%",
+              transform: "translateX(-50%) rotate(45deg)",
+              width: 10, height: 10,
+              background: COLORS.playhead,
+              border: "2px solid #fff",
+              borderRadius: 2,
+              pointerEvents: "none",
+            }} />
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -370,18 +697,31 @@ interface TimelinePanelProps {
   onReset: () => void;
   onExport: () => void;
   selectedId: string | null;
+  onAddCameraKeyframe: () => void;
 }
 
 export function TimelinePanel({
   currentTime, totalDuration, isPlaying, exporting,
-  exportFormat, onScrub, onPlay, onReset, onExport, selectedId,
+  exportFormat, onScrub, onPlay, onReset, onExport, selectedId, onAddCameraKeyframe,
 }: TimelinePanelProps) {
   const [panelExpanded, setPanelExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrubberScrollRef = useRef<HTMLDivElement>(null);
   const scenes = sceneStore.getManager().scenes;
 
   // Per-scene collapse state: Set of scene IDs that are collapsed
   const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(() => new Set());
+
+  const [selectedKfTime, setSelectedKfTime] = useState<number | null>(null);
+
+  const [, forceUpdate] = useState(0);
+  useEffect(() => {
+    return sceneStore.subscribe(() => forceUpdate(n => n + 1));
+  }, []);
+
+  const handleSelectKf = useCallback((time: number) => {
+    setSelectedKfTime(prev => (prev !== null && Math.abs(prev - time) < 0.05) ? null : time);
+  }, []);
 
   const toggleScene = useCallback((sceneId: string) => {
     setCollapsedScenes(prev => {
@@ -436,17 +776,89 @@ export function TimelinePanel({
           {isPlaying ? "⏸" : "▶"}
         </button>
 
+        {/* Add camera keyframe button */}
+        <button
+          onClick={onAddCameraKeyframe}
+          title="Add camera keyframe at current time"
+          style={{
+            ...ctrlBtn(),
+            color: "#f59e0b",
+            border: "1px solid rgba(245,158,11,0.4)",
+            background: "rgba(245,158,11,0.08)",
+            display: "flex", alignItems: "center", gap: 4,
+          }}
+        >
+          🎥 +KF
+        </button>
+
         {/* Time */}
         <span style={{ color: COLORS.muted, fontSize: 10, minWidth: 80, fontFamily: "monospace" }}>
           {currentTime.toFixed(2)}s / {totalDuration}s
         </span>
 
-        {/* Scrubber */}
-        <input
-          type="range" min={0} max={totalDuration} step={0.01}
-          value={currentTime} onChange={onScrub}
-          style={{ flex: 1, accentColor: COLORS.accent, cursor: "pointer" }}
-        />
+        {/* Scrubber — synced to track scroll */}
+        <div 
+          ref={scrubberScrollRef}
+          style={{ 
+            flex: 1, 
+            overflowX: "hidden",
+            position: "relative",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: LABEL_W,
+              width: totalDuration * PX_PER_SEC,
+              top: "50%",
+              transform: "translateY(-50%)",
+              height: 4,
+              background: COLORS.accentDim,
+              borderRadius: 2,
+              cursor: "pointer",
+            }}
+            onClick={e => {
+              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+              const ratio = (e.clientX - rect.left) / rect.width;
+              sceneStore.seek(ratio * totalDuration);
+            }}
+            onMouseDown={e => {
+              const el = e.currentTarget as HTMLDivElement;
+              const onMove = (ev: MouseEvent) => {
+                const rect = el.getBoundingClientRect();
+                const ratio = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+                sceneStore.seek(ratio * totalDuration);
+              };
+              const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+              };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
+            }}
+          >
+            {/* Fill */}
+            <div style={{
+              position: "absolute",
+              left: 0, top: 0, height: "100%",
+              width: `${(currentTime / totalDuration) * 100}%`,
+              background: COLORS.accent,
+              borderRadius: 2,
+              pointerEvents: "none",
+            }} />
+            {/* Thumb */}
+            <div style={{
+              position: "absolute",
+              top: "50%",
+              left: `${(currentTime / totalDuration) * 100}%`,
+              transform: "translate(-50%, -50%)",
+              width: 12, height: 12,
+              borderRadius: "50%",
+              background: COLORS.accent,
+              pointerEvents: "none",
+            }} />
+          </div>
+        </div>
 
         {/* Scene pills */}
         <div style={{ display: "flex", gap: 4 }}>
@@ -487,6 +899,12 @@ export function TimelinePanel({
       {panelExpanded && (
         <div
           ref={scrollRef}
+          data-timeline-scroll=""
+          onScroll={e => {
+            if (scrubberScrollRef.current) {
+              scrubberScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
+            }
+          }}
           style={{ overflowX: "auto", overflowY: "auto", maxHeight: 240, position: "relative" }}
         >
           {scenes.map(scene => (
@@ -498,6 +916,8 @@ export function TimelinePanel({
               isCollapsed={collapsedScenes.has(scene.id)}
               onToggle={() => toggleScene(scene.id)}
               onSeek={t => sceneStore.seek(t)}
+              selectedKfTime={selectedKfTime}
+              onSelectKf={handleSelectKf}
             />
           ))}
         </div>

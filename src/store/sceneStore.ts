@@ -4,7 +4,7 @@
  */
 
 import { buildSceneManager, getActiveScene, getLocalTime, getCameraForGlobalTime } from "../core/sceneManager";
-import type { SceneManager } from "../core/sceneManager";
+import type { SceneManager, Scene } from "../core/sceneManager";
 import { SvgEasing } from "../core/svgPath";
 import { SVG_SHAPES } from "../core/svgShapes";
 import type { AnimatedObject, CameraKeyframe } from "../core/timeline";
@@ -165,24 +165,92 @@ const scene3Camera: CameraKeyframe[] = [
 
 // ── Build manager ─────────────────────────────────────────────────────────────
 
+function computeSceneDuration(scene: Scene): number {
+  if (scene.objects.length === 0 && scene.svgObjects.length === 0) {
+    return scene.duration; // keep manual duration for empty scenes
+  }
+  let max = 0;
+  for (const obj of scene.objects) {
+    max = Math.max(max, obj.startTime + obj.duration);
+  }
+  for (const obj of scene.svgObjects) {
+    max = Math.max(max, obj.startTime + obj.duration);
+  }
+  return max > 0 ? max : scene.duration;
+}
+
 function buildStore() {
   const manager: SceneManager = buildSceneManager([
-    { id: "scene-1", name: "Introduction", duration: 4,   objects: scene1Objects, svgObjects: scene1Svg, cameraKeyframes: scene1Camera },
-    { id: "scene-2", name: "Shapes",       duration: 3.5, objects: scene2Objects, svgObjects: scene2Svg, cameraKeyframes: scene2Camera },
-    { id: "scene-3", name: "Conclusion",   duration: 4.5, objects: scene3Objects, svgObjects: scene3Svg, cameraKeyframes: scene3Camera },
+    { id: "scene-1", name: "Introduction", duration: 3.3,   objects: scene1Objects, svgObjects: scene1Svg, cameraKeyframes: scene1Camera },
+    { id: "scene-2", name: "Shapes",       duration: 3.2, objects: scene2Objects, svgObjects: scene2Svg, cameraKeyframes: scene2Camera },
+    { id: "scene-3", name: "Conclusion",   duration: 3.6, objects: scene3Objects, svgObjects: scene3Svg, cameraKeyframes: scene3Camera },
   ]);
 
   let currentTime = 0;
   let isPlaying   = false;
 
+  // ── Undo/Redo history ───────────────────────────────────────────────────
+  type Snapshot = string; // JSON of manager scenes
+  const history: Snapshot[] = [];
+  let historyIdx = -1;
+
+  const snapshot = () => JSON.stringify(manager.scenes.map(s => ({
+    ...s,
+    objects:    s.objects.map(o => ({ ...o })),
+    svgObjects: s.svgObjects.map(o => ({ ...o })),
+  })));
+
+  const saveHistory = () => {
+    // Drop any redo states ahead of current
+    history.splice(historyIdx + 1);
+    history.push(snapshot());
+    historyIdx = history.length - 1;
+    // Cap at 50 states
+    if (history.length > 50) { history.shift(); historyIdx--; }
+  };
+
+  const restoreSnapshot = (snap: Snapshot) => {
+    const parsed = JSON.parse(snap);
+    manager.scenes = parsed;
+    rebuildStartTimes();
+    notify();
+  };
+
+  // Save initial state
+  saveHistory();
+
   const listeners = new Set<() => void>();
   const notify    = () => listeners.forEach(fn => fn());
+
+  const rebuildStartTimes = () => {
+    let cursor = 0;
+    for (const s of manager.scenes) {
+      s.startTime = cursor;
+      cursor += s.duration;
+    }
+    manager.totalDuration = Math.round(cursor * 100) / 100;
+  };
+
+  const syncSceneDuration = (scene: Scene) => {
+    let max = 0;
+    for (const obj of scene.objects) {
+      max = Math.max(max, obj.startTime + obj.duration);
+    }
+    for (const obj of scene.svgObjects) {
+      max = Math.max(max, obj.startTime + obj.duration);
+    }
+    // Only shrink if objects exist, otherwise keep manual duration
+    if (scene.objects.length > 0 || scene.svgObjects.length > 0) {
+      scene.duration = Math.max(max, 0.5); // minimum 0.5s
+    }
+    rebuildStartTimes();
+  };
 
   return {
     getManager:    () => manager,
     getCurrentTime:() => currentTime,
     isPlaying:     () => isPlaying,
-    totalDuration: manager.totalDuration,
+    get totalDuration() { return manager.totalDuration; },
 
     // Active scene + local time (used by render)
     getActiveScene: () => getActiveScene(manager, currentTime),
@@ -211,14 +279,18 @@ function buildStore() {
       const scene = manager.scenes.find(s => s.id === sceneId);
       if (!scene) return;
       scene.objects.push(obj);
+      syncSceneDuration(scene);
       notify();
+      saveHistory();
     },
 
     addSvgObject: (sceneId: string, obj: SvgPathObject) => {
       const scene = manager.scenes.find(s => s.id === sceneId);
       if (!scene) return;
       scene.svgObjects.push(obj);
+      syncSceneDuration(scene);
       notify();
+      saveHistory();
     },
 
     removeObject: (sceneId: string, objId: string) => {
@@ -226,7 +298,9 @@ function buildStore() {
       if (!scene) return;
       scene.objects    = scene.objects.filter(o => o.id !== objId);
       scene.svgObjects = scene.svgObjects.filter(o => o.id !== objId);
+      syncSceneDuration(scene);
       notify();
+      saveHistory();
     },
 
     updateObject: (sceneId: string, objId: string, patch: Partial<AnimatedObject>) => {
@@ -234,6 +308,216 @@ function buildStore() {
       if (!scene) return;
       const obj = scene.objects.find(o => o.id === objId);
       if (obj) Object.assign(obj, patch);
+      syncSceneDuration(scene);
+      notify();
+    },
+
+    // ── Camera keyframes ──────────────────────────────────────────────────────────
+
+    addCameraKeyframe: (sceneId: string, kf: import("../core/timeline").CameraKeyframe) => {
+      const scene = manager.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+      // Remove any existing keyframe at same time (within 0.05s tolerance)
+      scene.cameraKeyframes = scene.cameraKeyframes.filter(k => Math.abs(k.time - kf.time) > 0.05);
+      scene.cameraKeyframes.push(kf);
+      scene.cameraKeyframes.sort((a, b) => a.time - b.time);
+      notify();
+      saveHistory();
+    },
+
+    removeCameraKeyframe: (sceneId: string, time: number) => {
+      const scene = manager.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+      scene.cameraKeyframes = scene.cameraKeyframes.filter(k => Math.abs(k.time - time) > 0.05);
+      notify();
+      saveHistory();
+    },
+
+    updateCameraKeyframe: (
+      sceneId: string,
+      time: number,
+      patch: Partial<import("../core/timeline").CameraKeyframe>
+    ) => {
+      const scene = manager.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+      const kf = scene.cameraKeyframes.find(k => Math.abs(k.time - time) <= 0.05);
+      if (kf) Object.assign(kf, patch);
+      notify();
+      saveHistory();
+    },
+
+    extendSceneDuration: (sceneId: string, minDuration: number) => {
+      const scene = manager.scenes.find(s => s.id === sceneId);
+      if (!scene) return;
+      if (minDuration > scene.duration) {
+        scene.duration = minDuration;
+        rebuildStartTimes();
+      }
+      notify();
+    },
+
+    addScene: () => {
+      const newId = `scene-${Date.now()}`;
+      const newScene = {
+        id: newId,
+        name: "New Scene",
+        duration: 4,
+        startTime: manager.totalDuration,
+        objects: [],
+        svgObjects: [],
+        cameraKeyframes: [{ time: 0, x: 0, y: 0, zoom: 1, easing: "linear" as const }],
+      };
+      manager.scenes.push(newScene);
+      rebuildStartTimes();
+      notify();
+      saveHistory();
+      return newId;
+    },
+
+    deleteScene: (sceneId: string) => {
+      if (manager.scenes.length <= 1) return; // keep at least 1
+      manager.scenes = manager.scenes.filter(s => s.id !== sceneId);
+      rebuildStartTimes();
+      currentTime = Math.min(currentTime, manager.totalDuration);
+      notify();
+      saveHistory();
+    },
+
+    renameScene: (sceneId: string, name: string) => {
+      const scene = manager.scenes.find(s => s.id === sceneId);
+      if (scene) { scene.name = name; notify(); }
+    },
+
+    reorderScenes: (fromIdx: number, toIdx: number) => {
+      const scenes = [...manager.scenes];
+      const [moved] = scenes.splice(fromIdx, 1);
+      scenes.splice(toIdx, 0, moved);
+      manager.scenes = scenes;
+      rebuildStartTimes();
+      notify();
+      saveHistory();
+    },
+
+    undo: () => {
+      if (historyIdx <= 0) return;
+      historyIdx--;
+      restoreSnapshot(history[historyIdx]);
+    },
+
+    redo: () => {
+      if (historyIdx >= history.length - 1) return;
+      historyIdx++;
+      restoreSnapshot(history[historyIdx]);
+    },
+
+    // ── Save / Load ───────────────────────────────────────────────────────────────
+    saveProject: () => {
+      const data = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        scenes: manager.scenes.map(s => ({
+          ...s,
+          objects:    s.objects.map(o => ({ ...o })),
+          svgObjects: s.svgObjects.map(o => ({
+            ...o,
+            easing: undefined, // functions can't serialize
+          })),
+        })),
+      };
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "project.wbs";
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+
+    loadProject: (json: string) => {
+      try {
+        const data = JSON.parse(json);
+        if (!data.scenes) throw new Error("Invalid project file");
+        manager.scenes = data.scenes.map((s: any) => ({
+          ...s,
+          svgObjects: (s.svgObjects ?? []).map((o: any) => ({
+            ...o,
+            easing: undefined,
+          })),
+        }));
+        for (const s of manager.scenes) {
+          let max = 0;
+          for (const obj of s.objects) max = Math.max(max, obj.startTime + obj.duration);
+          for (const obj of s.svgObjects) max = Math.max(max, obj.startTime + obj.duration);
+          if (s.objects.length > 0 || s.svgObjects.length > 0) {
+            s.duration = Math.max(max, 0.5);
+          }
+        }
+        rebuildStartTimes();
+        currentTime = 0;
+        isPlaying   = false;
+        notify();
+        // Auto-save after load
+        localStorage.setItem("wbs-autosave", json);
+      } catch (err) {
+        console.error("Failed to load project:", err);
+        throw err;
+      }
+    },
+
+    autoSave: () => {
+      try {
+        const data = {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          scenes: manager.scenes.map(s => ({
+            ...s,
+            objects:    s.objects.map(o => ({ ...o })),
+            svgObjects: s.svgObjects.map(o => ({ ...o, easing: undefined })),
+          })),
+        };
+        localStorage.setItem("wbs-autosave", JSON.stringify(data));
+      } catch {}
+    },
+
+    loadAutoSave: (): boolean => {
+      try {
+        const raw = localStorage.getItem("wbs-autosave");
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        if (!data.scenes) return false;
+        manager.scenes = data.scenes.map((s: any) => ({
+          ...s,
+          svgObjects: (s.svgObjects ?? []).map((o: any) => ({ ...o, easing: undefined })),
+        }));
+        for (const s of manager.scenes) {
+          let max = 0;
+          for (const obj of s.objects) max = Math.max(max, obj.startTime + obj.duration);
+          for (const obj of s.svgObjects) max = Math.max(max, obj.startTime + obj.duration);
+          if (s.objects.length > 0 || s.svgObjects.length > 0) {
+            s.duration = Math.max(max, 0.5);
+          }
+        }
+        rebuildStartTimes();
+        notify();
+        return true;
+      } catch { return false; }
+    },
+
+    newProject: () => {
+      manager.scenes = [{
+        id: "scene-1",
+        name: "Scene 1",
+        duration: 5,
+        startTime: 0,
+        objects: [],
+        svgObjects: [],
+        cameraKeyframes: [{ time: 0, x: 0, y: 0, zoom: 1, easing: "linear" as const }],
+      }];
+      manager.totalDuration = 5;
+      currentTime = 0;
+      isPlaying   = false;
+      localStorage.removeItem("wbs-autosave");
       notify();
     },
   };

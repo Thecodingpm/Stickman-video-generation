@@ -110,3 +110,75 @@ export function hitTestScene(
 
   return null;
 }
+
+// ── Snap to grid ──────────────────────────────────────────────────────────────
+
+export function snapToGrid(value: number, gridSize: number): number {
+  return Math.round(value / gridSize) * gridSize;
+}
+
+export function snapXY(
+  x: number, y: number,
+  gridSize: number,
+  enabled: boolean,
+): { x: number; y: number } {
+  if (!enabled) return { x, y };
+  return { x: snapToGrid(x, gridSize), y: snapToGrid(y, gridSize) };
+}
+
+// ── Snap to nearby object edges/centers ──────────────────────────────────────
+
+const SNAP_THRESHOLD = 8; // world-space pixels
+
+export interface SnapResult {
+  x: number;
+  y: number;
+  snapX: boolean;
+  snapY: boolean;
+}
+
+export function snapToObjects(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  scene: Scene,
+  excludeId: string,
+): SnapResult {
+  let outX = x, outY = y, snapX = false, snapY = false;
+
+  const allBoxes: BoundingBox[] = [
+    ...scene.objects.filter(o => o.id !== excludeId).map(getAnimatedObjectBBox),
+    ...(scene.svgObjects ?? []).filter(o => o.id !== excludeId).map(getSvgObjectBBox),
+  ];
+
+  // Candidate snaps: left, center, right of moving box vs same of each target
+  for (const box of allBoxes) {
+    const targets = {
+      x: [box.x, box.x + box.w / 2, box.x + box.w],
+      y: [box.y, box.y + box.h / 2, box.y + box.h],
+    };
+    const mine = {
+      x: [x, x + w / 2, x + w],
+      y: [y, y + h / 2, y + h],
+    };
+
+    for (let mi = 0; mi < 3; mi++) {
+      for (let ti = 0; ti < 3; ti++) {
+        const dX = Math.abs(mine.x[mi] - targets.x[ti]);
+        if (!snapX && dX < SNAP_THRESHOLD) {
+          outX = x + (targets.x[ti] - mine.x[mi]);
+          snapX = true;
+        }
+        const dY = Math.abs(mine.y[mi] - targets.y[ti]);
+        if (!snapY && dY < SNAP_THRESHOLD) {
+          outY = y + (targets.y[ti] - mine.y[mi]);
+          snapY = true;
+        }
+      }
+    }
+    if (snapX && snapY) break;
+  }
+
+  return { x: outX, y: outY, snapX, snapY };
+}

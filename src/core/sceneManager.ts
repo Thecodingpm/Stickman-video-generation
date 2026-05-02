@@ -43,22 +43,29 @@ export function buildSceneManager(scenes: Omit<Scene, "startTime">[]): SceneMana
 // ── Active scene query ─────────────────────────────────────────────────────────
 
 export function getActiveScene(manager: SceneManager, globalTime: number): Scene | null {
+  if (manager.scenes.length === 0) return null;
+
+  // Find exact match first
   for (const scene of manager.scenes) {
-    const end = scene.startTime + scene.duration;
-    if (globalTime >= scene.startTime && globalTime < end) return scene;
+    if (globalTime >= scene.startTime && globalTime < scene.startTime + scene.duration) {
+      return scene;
+    }
   }
-  // Return last scene if at/past end
-  if (manager.scenes.length > 0 && globalTime >= manager.totalDuration) {
-    return manager.scenes[manager.scenes.length - 1];
+
+  // In a gap or past end — return the last scene that started before globalTime
+  // This freezes the last frame of the previous scene (CapCut behaviour)
+  let last: Scene | null = null;
+  for (const scene of manager.scenes) {
+    if (globalTime >= scene.startTime) last = scene;
   }
-  return null;
+  return last;
 }
 
 // ── Local time ────────────────────────────────────────────────────────────────
 // Each scene's objects use local time (0 = scene start).
 
 export function getLocalTime(scene: Scene, globalTime: number): number {
-  return Math.max(0, globalTime - scene.startTime);
+  return Math.min(scene.duration, Math.max(0, globalTime - scene.startTime));
 }
 
 // ── Camera at global time (with cross-scene transition) ───────────────────────

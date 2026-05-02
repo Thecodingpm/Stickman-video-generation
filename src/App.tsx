@@ -15,8 +15,10 @@ import { exportVideo, DEFAULT_EXPORT_OPTIONS } from "./core/videoExporter";
 import type { ExportProgress } from "./core/videoExporter";
 import { exportWithFFmpeg, preloadFFmpeg, DEFAULT_FFMPEG_OPTIONS } from "./core/ffmpegExporter";
 import type { ExportFormat, ExportProgress as FFmpegProgress } from "./core/ffmpegExporter";
-import { screenToWorld, hitTestScene, getAnimatedObjectBBox, getSvgObjectBBox } from "./core/hitTest";
+import { screenToWorld, hitTestScene, getAnimatedObjectBBox, getSvgObjectBBox, snapXY, snapToObjects } from "./core/hitTest";
 import { TimelinePanel } from "./components/TimelinePanel";
+import { ScenePanel } from "./components/ScenePanel";
+import { AssetLibrary } from "./components/AssetLibrary";
 
 const PAN_SPEED        = 8;
 const KEY_ZOOM_STEP    = 0.05;
@@ -64,16 +66,43 @@ export default function App() {
   const lastTRef   = useRef<number>(0);
   const handRef    = useRef(createHandState("/hand1.png"));
 
+  const [handSrc,  setHandSrc]  = useState("/hand1.png");
+  const [rightTab, setRightTab] = useState<"properties" | "assets">("properties");
+
+  useEffect(() => {
+    if (handSrc) handRef.current = createHandState(handSrc);
+  }, [handSrc]);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-save every 30s
+  useEffect(() => {
+    // Load autosave on startup
+    const loaded = sceneStore.loadAutoSave();
+    if (loaded) console.log("[autosave] restored from localStorage");
+
+    const interval = setInterval(() => {
+      sceneStore.autoSave();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   // ── UI state ──────────────────────────────────────────────────────────────
   const [isPlaying,    setIsPlaying]    = useState(false);
   const [currentTime,  setCurrentTime]  = useState(0);
   const [editorState,  setEditorState]  = useState(editorStore.getState());
-  const totalDuration = sceneStore.totalDuration;
+  const [selectedKfTime, setSelectedKfTime] = useState<number | null>(null);
+  const [totalDuration, setTotalDuration] = useState(sceneStore.totalDuration);
 
   // Drag refs (not state — no re-render needed mid-drag)
-  const dragRef  = useRef<{ active: boolean; lastX: number; lastY: number }>({ active: false, lastX: 0, lastY: 0 });
-  const pinchRef = useRef<{ active: boolean; lastDist: number }>({ active: false, lastDist: 0 });
-  const objDragRef = useRef<{ active: boolean }>({ active: false });
+
+  const dragRef    = useRef({ active: false, lastX: 0, lastY: 0 });
+  const pinchRef   = useRef({ active: false, lastDist: 0 });
+  const objDragRef = useRef({ active: false });
+  const snapGuidesRef = useRef<{ x?: number; y?: number } | null>(null);
+  const lastSceneIdRef = useRef<string | null>(null);
+  // Multi-drag: store per-object original positions
+  const multiDragOriginsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
   // Export state
   const [exporting,       setExporting]       = useState(false);
@@ -86,6 +115,7 @@ export default function App() {
   useEffect(() => sceneStore.subscribe(() => {
     setIsPlaying(sceneStore.isPlaying());
     setCurrentTime(sceneStore.getCurrentTime());
+    setTotalDuration(sceneStore.getManager().totalDuration);
   }), []);
 
   useEffect(() => editorStore.subscribe(() => {
@@ -103,6 +133,7 @@ export default function App() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       keysRef.current.add(e.key);
+
       if (e.key === " ") {
         e.preventDefault();
         sceneStore.isPlaying() ? sceneStore.pause() : sceneStore.play();
@@ -110,10 +141,94 @@ export default function App() {
       if (e.key === "Escape") editorStore.deselect();
       if (e.key === "v" || e.key === "V") editorStore.setMode("select");
       if (e.key === "h" || e.key === "H") editorStore.setMode("pan");
+
+      // Add camera keyframe shortcut: K key
+      if (e.key === "k" || e.key === "K") {
+        onAddCameraKeyframe();
+      }
+
+      // Select all
+      if ((e.metaKey || e.ctrlKey) && e.key === "a") {
+        e.preventDefault();
+        const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+        if (scene) {
+          const all = [
+            ...scene.objects.map(o => ({ id: o.id, type: "animated" as const })),
+            ...(scene.svgObjects ?? []).map(o => ({ id: o.id, type: "svg" as const })),
+          ];
+          editorStore.selectAll(all);
+        }
+      }
+
+      // Delete
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+        if (scene) {
+          for (const sel of editorStore.getMultiSelected()) {
+            sceneStore.removeObject(scene.id, sel.id);
+          }
+          editorStore.deselect();
+        }
+      }
+
+      // Copy
+      if ((e.metaKey || e.ctrlKey) && e.key === "c") {
+        editorStore.setClipboard([...editorStore.getMultiSelected()]);
+      }
+
+      // Paste
+      if ((e.metaKey || e.ctrlKey) && e.key === "v") {
+        e.preventDefault();
+        const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+        if (!scene) return;
+        const newSels: typeof editorStore extends { getMultiSelected: () => infer R } ? R : never[] = [];
+        for (const clip of editorStore.getClipboard()) {
+          const newId = `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          if (clip.type === "animated") {
+            const orig = scene.objects.find(o => o.id === clip.id);
+            if (orig) {
+              sceneStore.addObject(scene.id, { ...orig, id: newId, x: orig.x + 20, y: orig.y + 20 });
+              (newSels as any[]).push({ id: newId, type: "animated" });
+            }
+          } else {
+            const orig = scene.svgObjects?.find(o => o.id === clip.id);
+            if (orig) {
+              sceneStore.addSvgObject(scene.id, { ...orig, id: newId, x: orig.x + 20, y: orig.y + 20 });
+              (newSels as any[]).push({ id: newId, type: "svg" });
+            }
+          }
+        }
+        if ((newSels as any[]).length > 0) editorStore.selectAll(newSels as any);
+      }
+
+      // Undo / Redo
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "z") { e.preventDefault(); sceneStore.undo(); }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey  && e.key === "z") { e.preventDefault(); sceneStore.redo(); }
+
+      // Arrow nudge (1px normal, 10px with Shift)
+      const nudge = e.shiftKey ? 10 : 1;
+      const dx = e.key === "ArrowLeft" ? -nudge : e.key === "ArrowRight" ? nudge : 0;
+      const dy = e.key === "ArrowUp"   ? -nudge : e.key === "ArrowDown"  ? nudge : 0;
+      if ((dx !== 0 || dy !== 0) && editorStore.getMultiSelected().length > 0) {
+        e.preventDefault(); // prevent canvas pan when object selected
+        const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+        if (scene) {
+          for (const sel of editorStore.getMultiSelected()) {
+            if (sel.type === "animated") {
+              const obj = scene.objects.find(o => o.id === sel.id);
+              if (obj) { obj.x += dx; obj.y += dy; }
+            } else {
+              const obj = scene.svgObjects?.find(o => o.id === sel.id);
+              if (obj) { obj.x += dx; obj.y += dy; }
+            }
+          }
+          sceneStore.getManager(); // trigger re-render via notify
+        }
+      }
     };
     const up = (e: KeyboardEvent) => keysRef.current.delete(e.key);
     window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
+    window.addEventListener("keyup",   up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, []);
 
@@ -144,81 +259,68 @@ export default function App() {
       if (e.button !== 0) return;
       canvas.setPointerCapture(e.pointerId);
 
-      const rect    = canvas.getBoundingClientRect();
-      const sx      = e.clientX - rect.left;
-      const sy      = e.clientY - rect.top;
-      const mode    = editorStore.getMode();
-      const world   = screenToWorld(sx, sy, cameraRef.current, canvas.width, canvas.height);
-      const scene   = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1) ?? null;
+      const rect  = canvas.getBoundingClientRect();
+      const sx    = e.clientX - rect.left;
+      const sy    = e.clientY - rect.top;
+      const mode  = editorStore.getMode();
+      const world = screenToWorld(sx, sy, cameraRef.current, canvas.width, canvas.height);
+      const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1) ?? null;
 
       if (mode === "select" && scene) {
         const hit = hitTestScene(world.x, world.y, scene);
         if (hit) {
-          editorStore.select(hit.id, hit.type);
-          // Begin object drag
-          const obj =
-            hit.type === "animated"
-              ? scene.objects.find(o => o.id === hit.id)
-              : scene.svgObjects?.find(o => o.id === hit.id);
-          if (obj) {
-            editorStore.beginDrag(world.x, world.y, obj.x, obj.y);
+          // Shift+click = multi-select
+          if (e.shiftKey) {
+            editorStore.toggleSelect(hit.id, hit.type);
+          } else {
+            // If clicking something already in multi-selection, keep all selected for drag
+            const alreadyInMulti = editorStore.getMultiSelected().some(s => s.id === hit.id);
+            if (!alreadyInMulti) editorStore.select(hit.id, hit.type);
+          }
+
+          // Record drag origins for ALL selected objects
+          const multi = editorStore.getMultiSelected();
+          multiDragOriginsRef.current.clear();
+          for (const sel of multi) {
+            const obj = sel.type === "animated"
+              ? scene.objects.find(o => o.id === sel.id)
+              : scene.svgObjects?.find(o => o.id === sel.id);
+            if (obj) multiDragOriginsRef.current.set(sel.id, { x: obj.x, y: obj.y });
+          }
+
+          const primaryObj = hit.type === "animated"
+            ? scene.objects.find(o => o.id === hit.id)
+            : scene.svgObjects?.find(o => o.id === hit.id);
+          if (primaryObj) {
+            editorStore.beginDrag(world.x, world.y, primaryObj.x, primaryObj.y);
             objDragRef.current.active = true;
           }
-        } else {
+        } else if (!e.shiftKey) {
           editorStore.deselect();
           dragRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
         }
       } else {
-        // Pan mode or any other non-select tool → canvas pan
         dragRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
       }
 
-      // ── Place new object on canvas click ─────────────────────────────────────
+      // Place new object
       const activeScene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
       if (!activeScene) return;
-
       const localTime = sceneStore.getLocalTime();
       const newId = `obj-${Date.now()}`;
 
       if (mode === "addText") {
-        sceneStore.addObject(activeScene.id, {
-          id: newId, type: "text",
-          x: world.x, y: world.y,
-          content: "Text",
-          fontSize: 24, fontFamily: "Georgia, serif",
-          fillColor: "#1e293b",
-          startTime: localTime, duration: 1.5,
-          animationType: "fade", easing: "easeOut",
-        });
-        editorStore.select(newId, "animated");
-        editorStore.setMode("select");
+        sceneStore.addObject(activeScene.id, { id: newId, type: "text", x: world.x, y: world.y, content: "Text", fontSize: 24, fontFamily: "Georgia, serif", fillColor: "#1e293b", startTime: localTime, duration: 1.5, animationType: "fade", easing: "easeOut" });
+        editorStore.select(newId, "animated"); editorStore.setMode("select");
       }
-
       if (mode === "addRect") {
-        sceneStore.addObject(activeScene.id, {
-          id: newId, type: "rect",
-          x: world.x - 60, y: world.y - 35,
-          width: 120, height: 70,
-          fillColor: "#6366f1", strokeColor: "#4f46e5", lineWidth: 2,
-          startTime: localTime, duration: 1,
-          animationType: "scale", scale: { from: 0, to: 1 }, easing: "spring",
-        });
-        editorStore.select(newId, "animated");
-        editorStore.setMode("select");
+        sceneStore.addObject(activeScene.id, { id: newId, type: "rect", x: world.x - 60, y: world.y - 35, width: 120, height: 70, fillColor: "#6366f1", strokeColor: "#4f46e5", lineWidth: 2, startTime: localTime, duration: 1, animationType: "scale", scale: { from: 0, to: 1 }, easing: "spring" });
+        editorStore.select(newId, "animated"); editorStore.setMode("select");
       }
-
       if (mode === "addCircle") {
-        sceneStore.addObject(activeScene.id, {
-          id: newId, type: "circle",
-          x: world.x, y: world.y, radius: 50,
-          fillColor: "#f59e0b", strokeColor: "#d97706", lineWidth: 2,
-          startTime: localTime, duration: 1,
-          animationType: "scale", scale: { from: 0, to: 1 }, easing: "spring",
-        });
-        editorStore.select(newId, "animated");
-        editorStore.setMode("select");
+        sceneStore.addObject(activeScene.id, { id: newId, type: "circle", x: world.x, y: world.y, radius: 50, fillColor: "#f59e0b", strokeColor: "#d97706", lineWidth: 2, startTime: localTime, duration: 1, animationType: "scale", scale: { from: 0, to: 1 }, easing: "spring" });
+        editorStore.select(newId, "animated"); editorStore.setMode("select");
       }
-
       canvas.style.cursor = "grabbing";
     };
 
@@ -229,21 +331,52 @@ export default function App() {
       const world = screenToWorld(sx, sy, cameraRef.current, canvas.width, canvas.height);
 
       if (objDragRef.current.active && editorStore.isDragging()) {
-        // Move the selected object in world space
-        const { world: startWorld, obj: startObj } = editorStore.getDragStart();
-        if (startWorld && startObj) {
-          const newX = startObj.x + (world.x - startWorld.x);
-          const newY = startObj.y + (world.y - startWorld.y);
-          const sel   = editorStore.getSelected();
-          const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1) ?? null;
-          if (sel && scene) {
-            if (sel.type === "animated") {
-              const obj = scene.objects.find(o => o.id === sel.id);
-              if (obj) { obj.x = newX; obj.y = newY; }
-            } else {
-              const obj = scene.svgObjects?.find(o => o.id === sel.id);
-              if (obj) { obj.x = newX; obj.y = newY; }
+        const { world: startWorld } = editorStore.getDragStart();
+        if (!startWorld) return;
+
+        const scene   = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1) ?? null;
+        const multi   = editorStore.getMultiSelected();
+        const snap    = editorStore.getSnapToGrid();
+        const grid    = editorStore.getGridSize();
+        const primary = editorStore.getSelected();
+
+        snapGuidesRef.current = null;
+
+        const rawDx = world.x - startWorld.x;
+        const rawDy = world.y - startWorld.y;
+
+        for (const sel of multi) {
+          const origin = multiDragOriginsRef.current.get(sel.id);
+          if (!origin || !scene) continue;
+
+          let nx = origin.x + rawDx;
+          let ny = origin.y + rawDy;
+
+          // Grid snap
+          const snapped = snapXY(nx, ny, grid, snap);
+          nx = snapped.x; ny = snapped.y;
+
+          // Object edge snap (primary object only, to avoid noise)
+          if (sel.id === primary?.id && scene) {
+            const obj = sel.type === "animated"
+              ? scene.objects.find(o => o.id === sel.id)
+              : scene.svgObjects?.find(o => o.id === sel.id);
+            if (obj) {
+              const box = sel.type === "animated"
+                ? getAnimatedObjectBBox({ ...obj as any, x: nx, y: ny })
+                : getSvgObjectBBox({ ...obj as any, x: nx, y: ny });
+              const result = snapToObjects(nx, ny, box.w, box.h, scene, sel.id);
+              if (result.snapX) { snapGuidesRef.current = { ...snapGuidesRef.current, x: result.x }; nx = result.x; }
+              if (result.snapY) { snapGuidesRef.current = { ...snapGuidesRef.current, y: result.y }; ny = result.y; }
             }
+          }
+
+          if (sel.type === "animated") {
+            const obj = scene.objects.find(o => o.id === sel.id);
+            if (obj) { obj.x = nx; obj.y = ny; }
+          } else {
+            const obj = scene.svgObjects?.find(o => o.id === sel.id);
+            if (obj) { obj.x = nx; obj.y = ny; }
           }
         }
         return;
@@ -259,20 +392,27 @@ export default function App() {
     };
 
     const onUp = () => {
-      dragRef.current.active    = false;
-      objDragRef.current.active = false;
+      if (objDragRef.current.active) {
+        // Commit to store history on mouseup
+        const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+        if (scene) sceneStore.updateObject(scene.id, editorStore.getSelected()?.id ?? "", {});
+      }
+      snapGuidesRef.current        = null;
+      dragRef.current.active       = false;
+      objDragRef.current.active    = false;
+      multiDragOriginsRef.current.clear();
       editorStore.endDrag();
       canvas.style.cursor = editorStore.getMode() === "pan" ? "grab" : "default";
     };
 
-    canvas.addEventListener("pointerdown", onDown);
-    canvas.addEventListener("pointermove", onMove);
-    canvas.addEventListener("pointerup",   onUp);
+    canvas.addEventListener("pointerdown",  onDown);
+    canvas.addEventListener("pointermove",  onMove);
+    canvas.addEventListener("pointerup",    onUp);
     canvas.addEventListener("pointerleave", onUp);
     return () => {
-      canvas.removeEventListener("pointerdown", onDown);
-      canvas.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointerup",   onUp);
+      canvas.removeEventListener("pointerdown",  onDown);
+      canvas.removeEventListener("pointermove",  onMove);
+      canvas.removeEventListener("pointerup",    onUp);
       canvas.removeEventListener("pointerleave", onUp);
     };
   }, []);
@@ -326,8 +466,28 @@ export default function App() {
       const localTime  = sceneStore.getLocalTime();
       const camTarget  = sceneStore.getCameraTarget();
 
+      // Detect scene change → hard snap camera to avoid lerping from wrong scene position
+      if (scene && scene.id !== lastSceneIdRef.current) {
+        lastSceneIdRef.current = scene.id;
+        if (sceneStore.isPlaying()) {
+          // Snap both camera and target instantly to new scene's starting position
+          const snapCam = sceneStore.getCameraTarget();
+          cameraRef.current  = { x: snapCam.x, y: snapCam.y, zoom: snapCam.zoom };
+          targetRef.current  = { x: snapCam.x, y: snapCam.y, zoom: snapCam.zoom };
+        }
+      }
+
+      const CAM_EPSILON = 0.5;   // world units
+      const ZOOM_EPSILON = 0.005;
+
       if (sceneStore.isPlaying()) {
-        targetRef.current = { ...targetRef.current, ...camTarget };
+        const t = targetRef.current;
+        const dx   = Math.abs(camTarget.x    - t.x);
+        const dy   = Math.abs(camTarget.y    - t.y);
+        const dz   = Math.abs(camTarget.zoom - t.zoom);
+        if (dx > CAM_EPSILON || dy > CAM_EPSILON || dz > ZOOM_EPSILON) {
+          targetRef.current = { x: camTarget.x, y: camTarget.y, zoom: camTarget.zoom };
+        }
       }
 
       if (!sceneStore.isPlaying()) {
@@ -341,13 +501,19 @@ export default function App() {
         if (keys.has("e") || keys.has("E")) targetRef.current = { ...targetRef.current, zoom: Math.max(MIN_ZOOM, targetRef.current.zoom - KEY_ZOOM_STEP) };
       }
 
-      cameraRef.current = lerpCamera(cameraRef.current, targetRef.current);
+      cameraRef.current = lerpCamera(cameraRef.current, targetRef.current, sceneStore.isPlaying());
 
       const ctx = canvas.getContext("2d")!;
       renderFrame(ctx, cameraRef.current, scene, localTime, canvas.width, canvas.height, handRef.current, globalTime, totalDuration);
 
       // Editor overlay (selection box)
-      drawEditorOverlay(ctx, cameraRef.current, scene, editorStore.getSelected(), canvas.width, canvas.height);
+      drawEditorOverlay(
+        ctx, cameraRef.current, scene,
+        editorStore.getSelected(),
+        canvas.width, canvas.height,
+        editorStore.getMultiSelected(),
+        snapGuidesRef.current ?? undefined,
+      );
 
       rafRef.current = requestAnimationFrame(loop);
     };
@@ -379,6 +545,52 @@ export default function App() {
       setFfmpegProgress({ stage: "error", percent: 0, error: String(err) });
     } finally { setExporting(false); }
   };
+
+  const onSave = () => sceneStore.saveProject();
+
+  const onLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        sceneStore.loadProject(ev.target?.result as string);
+      } catch {
+        alert("Failed to load project — invalid .wbs file");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const onNew = () => {
+    if (confirm("Start a new project? Unsaved changes will be lost.")) {
+      sceneStore.newProject();
+      editorStore.deselect();
+    }
+  };
+
+  const onAddCameraKeyframe = useCallback(() => {
+    const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+    if (!scene) return;
+
+    const wasPlaying = sceneStore.isPlaying();
+    sceneStore.pause();                                              // freeze time
+
+    const globalTime = sceneStore.getCurrentTime();
+    const localTime  = Math.max(0, globalTime - scene.startTime);
+    const cam        = cameraRef.current;
+
+    sceneStore.addCameraKeyframe(scene.id, {
+      time:   Math.round(localTime * 100) / 100,
+      x:      Math.round(cam.x * 10) / 10,
+      y:      Math.round(cam.y * 10) / 10,
+      zoom:   Math.round(cam.zoom * 1000) / 1000,
+      easing: "easeInOut",
+    });
+
+    if (wasPlaying) sceneStore.play();                              // resume if was playing
+  }, []);
 
   // ── Selected object info (for properties panel) ───────────────────────────
   const selectedObj = (() => {
@@ -424,10 +636,26 @@ export default function App() {
           );
         })}
 
+        <div style={{ width: "100%", height: 1, background: COLORS.border, margin: "8px 0" }} />
+        <button
+          title={editorState.snapToGrid ? "Snap: ON" : "Snap: OFF"}
+          onClick={() => editorStore.setSnapToGrid(!editorState.snapToGrid)}
+          style={{
+            width: 40, height: 40, borderRadius: 8,
+            border: editorState.snapToGrid ? `1px solid ${COLORS.accent}` : "1px solid transparent",
+            background: editorState.snapToGrid ? COLORS.accentDim : "transparent",
+            color: editorState.snapToGrid ? COLORS.accent : COLORS.muted,
+            cursor: "pointer", fontSize: 13,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          ⊞
+        </button>
+
       </div>
 
       {/* ── CANVAS ───────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+      <div style={{ flex: 1, position: "relative", overflow: "hidden", minWidth: 0 }}>
         <canvas
           ref={canvasRef}
           style={{
@@ -441,6 +669,8 @@ export default function App() {
         />
 
         {/* ── BOTTOM TIMELINE PANEL ─────────────────────────────────────────── */}
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, pointerEvents: "none" }}>
+        <div style={{ pointerEvents: "auto" }}>
         <TimelinePanel
           currentTime={currentTime}
           totalDuration={totalDuration}
@@ -452,7 +682,10 @@ export default function App() {
           onReset={() => sceneStore.reset()}
           onExport={exportFormat === "webm" ? onExport : onFFmpegExport}
           selectedId={editorState.selected?.id ?? null}
+          onAddCameraKeyframe={onAddCameraKeyframe}
         />
+        </div>
+        </div>
 
         {/* Export overlay */}
         {exporting && (ffmpegProgress || exportProgress) && (() => {
@@ -475,14 +708,28 @@ export default function App() {
       </div>
 
       {/* ── RIGHT PROPERTIES PANEL ───────────────────────────────────────── */}
-      <div style={{ ...panel, width: 240, borderRight: "none", borderLeft: `1px solid ${COLORS.border}`, overflow: "auto" }}>
+      <div style={{ ...panel, width: 240, flexShrink: 0, borderRight: "none", borderLeft: `1px solid ${COLORS.border}`, overflow: "auto" }}>
 
         {/* Panel header */}
-        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${COLORS.border}`, fontSize: 10, color: COLORS.muted, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-          Properties
+        <div style={{ display: "flex", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0 }}>
+          {(["properties", "assets"] as const).map(tab => (
+            <button key={tab} onClick={() => setRightTab(tab)} style={{
+              flex: 1, padding: "9px 0", fontSize: 9, fontFamily: "monospace",
+              textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer",
+              border: "none",
+              borderBottom: rightTab === tab ? `2px solid ${COLORS.accent}` : "2px solid transparent",
+              background: "transparent",
+              color: rightTab === tab ? COLORS.accent : COLORS.muted,
+            }}>{tab}</button>
+          ))}
         </div>
 
-        {selectedObj ? (
+        {rightTab === "assets" ? (
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            {(() => { console.log('[assets] rendering AssetLibrary', { handSrc }); return null; })()}
+            <AssetLibrary onHandChange={setHandSrc} currentHand={handSrc} />
+          </div>
+        ) : selectedObj ? (
           <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
 
             {/* Object ID */}
@@ -557,6 +804,49 @@ export default function App() {
               </PropRow>
             )}
 
+            {/* ── Camera keyframe inspector — shows when a kf is selected ── */}
+            {(() => {
+              const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+              const kf = selectedKfTime !== null
+                ? scene?.cameraKeyframes.find(k => Math.abs(k.time - selectedKfTime) < 0.05)
+                : null;
+              if (!kf || !scene) return null;
+              return (
+                <>
+                  <div style={{ width: "100%", height: 1, background: COLORS.border }} />
+                  <span style={{ color: "#f59e0b", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                    🎥 Camera KF @ {kf.time.toFixed(2)}s
+                  </span>
+                  <PropRow label="Cam X">
+                    <NumInput value={Math.round(kf.x)} onChange={v => sceneStore.updateCameraKeyframe(scene.id, kf.time, { x: v })} />
+                  </PropRow>
+                  <PropRow label="Cam Y">
+                    <NumInput value={Math.round(kf.y)} onChange={v => sceneStore.updateCameraKeyframe(scene.id, kf.time, { y: v })} />
+                  </PropRow>
+                  <PropRow label="Zoom">
+                    <NumInput value={kf.zoom} step={0.05} onChange={v => sceneStore.updateCameraKeyframe(scene.id, kf.time, { zoom: Math.max(0.1, v) })} />
+                  </PropRow>
+                  <PropRow label="Easing">
+                    <select
+                      value={kf.easing}
+                      onChange={e => sceneStore.updateCameraKeyframe(scene.id, kf.time, { easing: e.target.value as any })}
+                      style={{ background: "#1e2530", border: "1px solid rgba(99,102,241,0.2)", color: "#e2e8f0", borderRadius: 4, fontSize: 10, padding: "2px 4px" }}
+                    >
+                      {["linear","easeIn","easeOut","easeInOut","spring"].map(e => (
+                        <option key={e} value={e}>{e}</option>
+                      ))}
+                    </select>
+                  </PropRow>
+                  <button
+                    onClick={() => { sceneStore.removeCameraKeyframe(scene.id, kf.time); setSelectedKfTime(null); }}
+                    style={{ padding: "3px 10px", borderRadius: 6, fontSize: 10, cursor: "pointer", border: "none", background: "rgba(239,68,68,0.1)", color: "#ef4444", borderTop: "1px solid rgba(239,68,68,0.3)", marginTop: 4 }}
+                  >
+                    Delete Keyframe
+                  </button>
+                </>
+              );
+            })()}
+
           </div>
         ) : (
           <div style={{ padding: 20, color: COLORS.muted, fontSize: 11, textAlign: "center", lineHeight: 1.6 }}>
@@ -566,10 +856,39 @@ export default function App() {
 
         {/* Scene info at bottom */}
         <div style={{ flex: 1 }} />
-        <div style={{ padding: "10px 14px", borderTop: `1px solid ${COLORS.border}`, fontSize: 10, color: COLORS.muted }}>
-          <div>Scene: {sceneStore.getActiveScene()?.name ?? "—"}</div>
-          <div>Time: {currentTime.toFixed(2)}s / {totalDuration}s</div>
-          <div style={{ marginTop: 6, color: COLORS.dimmer }}>V select · H pan · Esc deselect</div>
+
+        {/* Save */}
+        <button onClick={onSave} title="Save project" style={{
+          width: 40, height: 40, borderRadius: 8, border: "1px solid transparent",
+          background: "transparent", color: COLORS.muted, cursor: "pointer", fontSize: 14,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>💾</button>
+
+        {/* Load */}
+        <button onClick={() => fileInputRef.current?.click()} title="Load project" style={{
+          width: 40, height: 40, borderRadius: 8, border: "1px solid transparent",
+          background: "transparent", color: COLORS.muted, cursor: "pointer", fontSize: 14,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>📂</button>
+
+        {/* New */}
+        <button onClick={onNew} title="New project" style={{
+          width: 40, height: 40, borderRadius: 8, border: "1px solid transparent",
+          background: "transparent", color: COLORS.muted, cursor: "pointer", fontSize: 14,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>🆕</button>
+
+        {/* Hidden file input */}
+        <input ref={fileInputRef} type="file" accept=".wbs,.json"
+          style={{ display: "none" }} onChange={onLoad} />
+        <div style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <ScenePanel
+            currentTime={currentTime}
+            onSceneSelect={() => editorStore.deselect()}
+          />
+        </div>
+        <div style={{ padding: "8px 14px", borderTop: `1px solid ${COLORS.border}`, fontSize: 9, color: COLORS.dimmer }}>
+          V select · H pan · Esc deselect
         </div>
       </div>
     </div>

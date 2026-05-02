@@ -25,7 +25,8 @@ export const MAX_ZOOM = 20;
 
 // Lerp factor per frame (0–1). Higher = snappier, lower = more inertia.
 // At 60fps: 0.12 feels like Figma, 0.08 feels like Miro.
-const LERP_FACTOR = 0.12;
+const LERP_FACTOR          = 0.12;  // manual pan (smooth/inertia feel)
+const LERP_FACTOR_PLAYBACK = 0.18;  // keyframe playback (tighter tracking)
 
 // Threshold below which we snap to target (prevents infinite micro-lerp)
 const LERP_EPSILON = 0.0001;
@@ -68,18 +69,19 @@ export function zoomTargetToPoint(
   return { x: newX, y: newY, zoom: newZoom };
 }
 
-// ── Lerp step (call once per RAF frame) ──────────────────────────────────────
-export function lerpCamera(camera: Camera, target: CameraTarget): Camera {
-  const dx = target.x - camera.x;
-  const dy = target.y - camera.y;
+// ── Interpolation ─────────────────────────────────────────────────────────────
+
+export function lerpCamera(camera: Camera, target: CameraTarget, fast = false): Camera {
+  const f  = fast ? LERP_FACTOR_PLAYBACK : LERP_FACTOR;
+  const dx = target.x    - camera.x;
+  const dy = target.y    - camera.y;
   const dz = target.zoom - camera.zoom;
 
-  // Snap when close enough to avoid infinite micro-movement
-  const newX = Math.abs(dx) < LERP_EPSILON ? target.x : camera.x + dx * LERP_FACTOR;
-  const newY = Math.abs(dy) < LERP_EPSILON ? target.y : camera.y + dy * LERP_FACTOR;
-  const newZoom = Math.abs(dz) < LERP_EPSILON ? target.zoom : camera.zoom + dz * LERP_FACTOR;
-
-  return { x: newX, y: newY, zoom: newZoom };
+  return {
+    x:    Math.abs(dx) < LERP_EPSILON ? target.x    : camera.x    + dx * f,
+    y:    Math.abs(dy) < LERP_EPSILON ? target.y    : camera.y    + dy * f,
+    zoom: Math.abs(dz) < LERP_EPSILON ? target.zoom : camera.zoom + dz * f,
+  };
 }
 
 // ── Legacy helpers (keyboard pan/zoom still update target) ────────────────────
