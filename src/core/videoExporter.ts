@@ -144,7 +144,7 @@ export async function exportVideo(
           target = { ...target, ...camTarget };
           camera = lerpCamera(camera, target);
 
-          renderFrame(ctx, camera, scene, localTime, width, height, hand, globalTime, totalDuration);
+          renderFrame(ctx, camera, scene, localTime, width, height, hand, globalTime, totalDuration, true);
 
           lastRenderedFrame = frameIndex;
 

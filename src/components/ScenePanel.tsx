@@ -24,7 +24,7 @@ interface ScenePanelProps {
   onSceneSelect: (scene: Scene) => void;
 }
 
-export function ScenePanel({ currentTime, onSceneSelect }: ScenePanelProps) {
+export function ScenePanel({ currentTime: _currentTime, onSceneSelect }: ScenePanelProps) {
   const scenes      = sceneStore.getManager().scenes;
   const activeScene = sceneStore.getActiveScene();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -85,7 +85,7 @@ export function ScenePanel({ currentTime, onSceneSelect }: ScenePanelProps) {
               onDragOver={e => handleDragOver(e, idx)}
               onDragLeave={() => setDragOver(null)}
               onDrop={() => handleDrop(idx)}
-              onClick={e => { if (editingId) return; sceneStore.seek(scene.startTime); onSceneSelect(scene); }}
+              onClick={() => { if (editingId) return; sceneStore.seek(scene.startTime); onSceneSelect(scene); }}
               style={{
                 display: "flex", flexDirection: "column", gap: 2,
                 padding: "7px 10px",

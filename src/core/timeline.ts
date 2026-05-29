@@ -1,5 +1,7 @@
 // ── Easing ────────────────────────────────────────────────────────────────────
 
+import type { TransformTracks } from "./transformInterpolator";
+
 export type EasingFn = (t: number) => number;
 
 export const Easing = {
@@ -18,7 +20,16 @@ export type EasingName = keyof typeof Easing;
 
 // ── Animation types ───────────────────────────────────────────────────────────
 
-export type AnimationType = "fade" | "draw" | "move" | "scale" | "static";
+export type AnimationType = "fade" | "draw" | "move" | "scale" | "static" | "slideLeft" | "slideRight" | "slideUp" | "slideDown";
+
+export type ExitType  = "fade" | "slideLeft" | "slideRight" | "slideUp" | "slideDown" | "none";
+export type EntryType = "fade" | "draw" | "scale" | "slideLeft" | "slideRight" | "slideUp" | "slideDown" | "static";
+
+export interface ExitConfig {
+  type:     ExitType;
+  duration: number;      // seconds — carved from END of object duration
+  easing:   EasingName;
+}
 
 export interface MoveConfig {
   fromX: number;
@@ -36,7 +47,7 @@ export interface ScaleConfig {
 
 export interface AnimatedObject {
   id:            string;
-  type:          "rect" | "circle" | "text";
+  type:          "rect" | "circle" | "text" | "image";
 
   // Base world position (used for static / fade / draw)
   x:             number;
@@ -45,8 +56,14 @@ export interface AnimatedObject {
   height?:       number;  // rect
   radius?:       number;  // circle
   content?:      string;  // text
+  src?:          string;  // image source url
   fontSize?:     number;
   fontFamily?:   string;
+  fontWeight?:   "normal" | "bold";        // text
+  fontStyle?:    "normal" | "italic";      // text
+  textAlign?:    "left" | "center" | "right"; // text
+  textWrapWidth?: number;                  // text wrap (px, world units)
+  strokeText?:   boolean;                  // text outline
 
   fillColor?:    string;
   strokeColor?:  string;
@@ -55,12 +72,18 @@ export interface AnimatedObject {
   // Timeline
   startTime:     number;  // seconds
   duration:      number;  // seconds
-  easing:        EasingName;
+  easing?:       EasingName;
 
   // Animation
   animationType: AnimationType;
   move?:         MoveConfig;   // for "move"
   scale?:        ScaleConfig;  // for "scale"
+  exit?:         ExitConfig;
+
+  // ── Per-object keyframe transform tracks ─────────────────────────────────
+  // Optional — when present, drives smooth position/scale/rotation/opacity
+  // animation on top of the existing entry/exit animation system.
+  transformTracks?: TransformTracks;
 }
 
 // ── Camera keyframe ───────────────────────────────────────────────────────────
@@ -89,15 +112,69 @@ export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-/** Returns progress [0,1] of an object at currentTime, or null if not active */
+export interface ObjectRenderState {
+  phase:    "before" | "entry" | "hold" | "exit" | "after";
+  progress: number;   // 0-1 within current phase
+  alpha:    number;   // final computed alpha (entry/exit handle this)
+  entryProgress: number; // 0-1 of entry phase (for draw/scale/slide)
+  exitProgress:  number; // 0-1 of exit phase
+}
+
+export function getObjectRenderState(
+  obj: AnimatedObject,
+  currentTime: number,
+): ObjectRenderState | null {
+  const start = obj.startTime;
+  const end   = start + obj.duration;
+
+  // Outside lifetime entirely
+  if (currentTime < start || currentTime > end) return null;
+
+
+
+  // Entry duration = full object duration (legacy behaviour)
+  // BUT if exit exists, entry = duration - exit.duration (clamped)
+  const exitDur  = obj.exit ? Math.min(obj.exit.duration, obj.duration * 0.9) : 0;
+  const rawEntry = obj.duration - exitDur;
+  const actualEntryDur = Math.max(0.01, rawEntry);
+
+  const localT = currentTime - start;
+
+  // ── Exit phase ──
+  if (exitDur > 0 && localT >= actualEntryDur) {
+    const exitT    = localT - actualEntryDur;
+    const exitRaw  = Math.min(1, exitT / exitDur);
+    const exitEase = obj.exit ? (Easing[obj.exit.easing] || Easing.easeOut)(exitRaw) : exitRaw;
+    return {
+      phase:         "exit",
+      progress:      exitEase,
+      alpha:         1 - exitEase,   // 1→0 during exit
+      entryProgress: 1,
+      exitProgress:  exitEase,
+    };
+  }
+
+  // ── Entry phase ──
+  const entryRaw  = Math.min(1, localT / actualEntryDur);
+  const entryEase = (Easing[obj.easing || "easeOut"] || Easing.easeOut)(entryRaw);
+
+  return {
+    phase:         entryRaw < 1 ? "entry" : "hold",
+    progress:      entryEase,
+    alpha:         entryEase,
+    entryProgress: entryEase,
+    exitProgress:  0,
+  };
+}
+
+// Keep getObjectProgress for backward compat (used by existing scenes)
 export function getObjectProgress(
   obj: AnimatedObject,
-  currentTime: number
+  currentTime: number,
 ): number | null {
-  if (currentTime < obj.startTime) return null;
-  if (currentTime > obj.startTime + obj.duration) return null;
-  const raw = (currentTime - obj.startTime) / obj.duration;
-  return Easing[obj.easing](Math.min(1, Math.max(0, raw)));
+  const state = getObjectRenderState(obj, currentTime);
+  if (!state) return null;
+  return state.progress;
 }
 
 /** Interpolate camera position from keyframes at currentTime */
@@ -130,7 +207,7 @@ export function getCameraAtTime(
   const from = kf[fromIdx];
   const to   = kf[fromIdx + 1];
   const raw  = (currentTime - from.time) / (to.time - from.time);
-  const t    = Easing[to.easing](Math.min(1, Math.max(0, raw)));
+  const t    = (Easing[to.easing] || Easing.easeInOut)(Math.min(1, Math.max(0, raw)));
 
   return {
     x:    lerp(from.x,    to.x,    t),

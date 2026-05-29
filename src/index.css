@@ -1,15 +1,118 @@
-html, body {
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #101014;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: #f6f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
   margin: 0;
   padding: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #f8fafc;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #f6f7fb;
 }
 
 #root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ScribeFlow animations */
+@keyframes float-card {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -12px, 0);
+  }
+}
+
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes draw-line {
+  0% {
+    stroke-dashoffset: 260;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes timeline-scan {
+  0% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(185%);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+}
+
+/* Custom background patterns and animations */
+.motion-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.paper-grid {
+  background-image:
+    linear-gradient(rgba(16, 16, 20, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 16, 20, 0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.animate-float-card {
+  animation: float-card 5s ease-in-out infinite;
+}
+
+.animate-marquee {
+  animation: marquee 24s linear infinite;
+}
+
+.animate-draw-line {
+  stroke-dasharray: 260;
+  animation: draw-line 3s ease-in-out infinite alternate;
+}
+
+.animate-timeline-scan {
+  animation: timeline-scan 4s ease-in-out infinite;
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
 }

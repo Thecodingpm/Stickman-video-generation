@@ -8,7 +8,7 @@ import type { Camera } from "./camera";
 import type { AnimatedObject } from "./timeline";
 import type { SvgPathObject } from "./svgPath";
 import type { Scene } from "./sceneManager";
-import { getCachedPath } from "./svgPath";
+
 
 // ── Screen → World ────────────────────────────────────────────────────────────
 
@@ -31,6 +31,47 @@ export interface BoundingBox {
   x: number; y: number; w: number; h: number;
 }
 
+// ── Offscreen canvas for text measurement ─────────────────────────────────────
+// One shared offscreen canvas for BBox measurement — avoids creating canvas on every call
+let _measureCtx: CanvasRenderingContext2D | null = null;
+function getMeasureCtx(): CanvasRenderingContext2D {
+  if (!_measureCtx) {
+    const c = document.createElement("canvas");
+    _measureCtx = c.getContext("2d")!;
+  }
+  return _measureCtx;
+}
+
+function wrapTextLines(
+  ctx: CanvasRenderingContext2D,
+  content: string,
+  wrapWidth: number,
+): string[] {
+  if (wrapWidth <= 0) return content.split("\n");
+
+  const lines: string[] = [];
+
+  for (const para of content.split("\n")) {
+    const words = para.split(" ");
+    let line = "";
+
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+
+      if (ctx.measureText(test).width > wrapWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+
+    lines.push(line);
+  }
+
+  return lines;
+}
+
 export function getAnimatedObjectBBox(obj: AnimatedObject): BoundingBox {
   switch (obj.type) {
     case "rect":
@@ -39,13 +80,42 @@ export function getAnimatedObjectBBox(obj: AnimatedObject): BoundingBox {
       const r = obj.radius ?? 40;
       return { x: obj.x - r, y: obj.y - r, w: r * 2, h: r * 2 };
     }
-    case "text":
-      // Approximate: fontSize × content length for width, fontSize for height
-      return { x: obj.x, y: obj.y, w: (obj.fontSize ?? 16) * (obj.content?.length ?? 4) * 0.6, h: (obj.fontSize ?? 16) * 1.4 };
+    case "text": {
+      const fs = obj.fontSize ?? 16;
+      const weight = obj.fontWeight ?? "normal";
+      const style = obj.fontStyle ?? "normal";
+      const family = obj.fontFamily ?? "sans-serif";
+      const wrapWidth = obj.textWrapWidth ?? 0;
+      const textAlign = obj.textAlign ?? "left";
+      const ctx = getMeasureCtx();
+
+      ctx.font = `${style} ${weight} ${fs}px ${family}`;
+
+      const allLines = wrapTextLines(ctx, obj.content ?? "", wrapWidth);
+      const measuredW = Math.max(...allLines.map(l => ctx.measureText(l).width), fs * 2);
+      const w = wrapWidth > 0 ? wrapWidth : measuredW;
+      const h = fs * 1.4 * Math.max(1, allLines.length);
+
+      let x = obj.x;
+
+      if (textAlign === "center") {
+        x = obj.x - w / 2;
+      } else if (textAlign === "right") {
+        x = obj.x - w;
+      }
+
+      return {
+        x,
+        y: obj.y,
+        w,
+        h,
+      };
+    }
     default:
       return { x: obj.x, y: obj.y, w: 60, h: 60 };
   }
 }
+
 
 export function getSvgObjectBBox(obj: SvgPathObject): BoundingBox {
   // Estimate from path using a temporary SVGPathElement
@@ -71,7 +141,7 @@ export function getSvgObjectBBox(obj: SvgPathObject): BoundingBox {
   }
 }
 
-function pointInBox(px: number, py: number, box: BoundingBox, pad = 20): boolean {
+function pointInBox(px: number, py: number, box: BoundingBox, pad = 8): boolean {
   return px >= box.x - pad && px <= box.x + box.w + pad
       && py >= box.y - pad && py <= box.y + box.h + pad;
 }
@@ -93,7 +163,7 @@ export function hitTestScene(
     for (let i = scene.svgObjects.length - 1; i >= 0; i--) {
       const obj = scene.svgObjects[i];
       const box = getSvgObjectBBox(obj);
-      if (pointInBox(worldX, worldY, box)) {
+      if (pointInBox(worldX, worldY, box, 8)) {
         return { id: obj.id, type: "svg" };
       }
     }
@@ -103,7 +173,9 @@ export function hitTestScene(
   for (let i = scene.objects.length - 1; i >= 0; i--) {
     const obj = scene.objects[i];
     const box = getAnimatedObjectBBox(obj);
-    if (pointInBox(worldX, worldY, box)) {
+    const pad = obj.type === "text" ? 12 : 8;
+
+    if (pointInBox(worldX, worldY, box, pad)) {
       return { id: obj.id, type: "animated" };
     }
   }
@@ -181,4 +253,19 @@ export function snapToObjects(
   }
 
   return { x: outX, y: outY, snapX, snapY };
+}
+
+export function getObjectCenter(
+  obj: AnimatedObject | SvgPathObject,
+  type: "animated" | "svg"
+): { x: number; y: number; w: number; h: number } {
+  const box = type === "animated"
+    ? getAnimatedObjectBBox(obj as AnimatedObject)
+    : getSvgObjectBBox(obj as SvgPathObject);
+  return {
+    x: box.x + box.w / 2,
+    y: box.y + box.h / 2,
+    w: box.w,
+    h: box.h,
+  };
 }

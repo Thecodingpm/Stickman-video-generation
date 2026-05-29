@@ -79,7 +79,7 @@ async function renderAllFrames(
     target = { ...target, ...camTarget };
     camera = lerpCamera(camera, target);
 
-    renderFrame(ctx, camera, scene, localTime, width, height, hand, globalTime, totalDuration);
+    renderFrame(ctx, camera, scene, localTime, width, height, hand, globalTime, totalDuration, true);
 
     await onFrame(canvas, i);
 
@@ -130,8 +130,6 @@ async function exportMP4(
     framerate: fps,
   });
 
-  let frameIndex = 0;
-
   await renderAllFrames(manager, hand, options, onProgress, async (canvas, i) => {
     const frame = new VideoFrame(canvas, {
       timestamp: (i / fps) * 1_000_000, // microseconds
@@ -140,7 +138,6 @@ async function exportMP4(
     const keyFrame = i % (fps * 2) === 0; // keyframe every 2s
     encoder.encode(frame, { keyFrame });
     frame.close();
-    frameIndex = i;
   });
 
   await encoder.flush();

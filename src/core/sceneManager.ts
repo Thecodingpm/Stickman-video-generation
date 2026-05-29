@@ -22,9 +22,27 @@ export interface Scene {
   background?:     string;          // optional bg color override
 }
 
+export interface AudioTrack {
+  id:          string;
+  name:        string;
+  src:         string;          // Blob URL or resource path
+  startTime:   number;          // global time in seconds
+  duration:    number;          // length in seconds
+  volume:      number;          // 0 to 1
+  isMuted?:    boolean;
+}
+
+export interface SubtitleCue {
+  startTime: number;
+  endTime:   number;
+  text:      string;
+}
+
 export interface SceneManager {
   scenes:        Scene[];
   totalDuration: number;
+  audioTracks?:  AudioTrack[];
+  subtitles?:    SubtitleCue[];
 }
 
 // ── Build manager ─────────────────────────────────────────────────────────────

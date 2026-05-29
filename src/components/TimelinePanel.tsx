@@ -248,18 +248,19 @@ interface KfDiamondProps {
   isHov: boolean;
   pxPerSec: number;
   scene: Scene;
-  trackRef: React.RefObject<HTMLDivElement>;
+  trackRef: React.RefObject<HTMLDivElement | null>;
   onSelect: (time: number) => void;
   onHover: (time: number | null) => void;
 }
 
-function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, onHover }: KfDiamondProps) {
+function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef: _trackRef, onSelect, onHover }: KfDiamondProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     onSelect(kf.time);
+    sceneStore.seek(scene.startTime + kf.time);
 
     const startMouseX = e.clientX;
     const startKfTime = kf.time;
@@ -276,7 +277,7 @@ function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, o
       const dx      = ev.clientX - startMouseX;
       const dtSecs  = dx / pxPerSec;
       latestTime    = Math.max(0, Math.min(maxTime, startKfTime + dtSecs));
-      // Direct DOM mutation — no stale ref, no React re-render
+      // Direct DOM mutation — no React re-render during drag
       wrapEl.style.left = `${latestTime * pxPerSec}px`;
     };
 
@@ -284,13 +285,16 @@ function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, o
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup",   onUp);
       if (!didDrag) return;
+      const roundedTime = Math.round(latestTime * 100) / 100;
       // Single store commit on release
       sceneStore.removeCameraKeyframe(scene.id, startKfTime);
       sceneStore.addCameraKeyframe(scene.id, {
         ...kf,
-        time: Math.round(latestTime * 100) / 100,
+        time: roundedTime,
+        easing: kf.easing as any,
       });
-      onSelect(Math.round(latestTime * 100) / 100);
+      onSelect(roundedTime);
+      sceneStore.seek(scene.startTime + roundedTime);
     };
 
     window.addEventListener("mousemove", onMove);
@@ -311,7 +315,11 @@ function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, o
       }}
       onMouseEnter={() => onHover(kf.time)}
       onMouseLeave={() => onHover(null)}
-      onClick={e => { e.stopPropagation(); onSelect(kf.time); }}
+      onClick={e => {
+        e.stopPropagation();
+        onSelect(kf.time);
+        sceneStore.seek(scene.startTime + kf.time);
+      }}
       onMouseDown={onMouseDown}
     >
       {/* Diamond shape */}
@@ -357,7 +365,7 @@ function KfDiamond({ kf, x, isSel, isHov, pxPerSec, scene, trackRef, onSelect, o
 }
 
 function CameraKeyframeRow({
-  scene, pxPerSec, currentTime, selectedKfTime, onSelect, onSeek,
+  scene, pxPerSec, currentTime: _currentTime, selectedKfTime, onSelect, onSeek,
 }: CameraKeyframeRowProps) {
   const totalW = scene.duration * pxPerSec;
   const [hoveredKfTime, setHoveredKfTime] = useState<number | null>(null);
@@ -595,7 +603,7 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
         const lineRef = { current: null as HTMLDivElement | null };
         return (
           <div
-            ref={el => (lineRef.current = el)}
+            ref={el => { lineRef.current = el; }}
             style={{
               position: "absolute",
               left: LABEL_W + playheadX + 16,
@@ -611,51 +619,7 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
               background: "transparent",
               display: "flex",
               justifyContent: "center",
-            }}
-            onMouseDown={e => {
-              e.stopPropagation();
-              e.preventDefault();
-
-              // Capture the scene section container — parent of this playhead div
-              const sectionEl = (e.currentTarget as HTMLDivElement).parentElement!;
-              const sectionRect = sectionEl.getBoundingClientRect();
-              
-              const scrollEl   = sectionEl.closest("[data-timeline-scroll]") as HTMLElement;
-              const scrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
-              const trackLeft  = sectionRect.left + LABEL_W - scrollLeft + 14;
-
-              console.log("[DRAG ORIGIN]", {
-                sectionRectLeft: sectionRect.left,
-                LABEL_W,
-                trackLeft,
-                mouseX: e.clientX,
-                computedLocalT: (e.clientX - trackLeft) / pxPerSec,
-                expectedLocalT: localTime,
-                diffSeconds:    localTime - (e.clientX - trackLeft) / pxPerSec,
-                diffPixels:     (localTime - (e.clientX - trackLeft) / pxPerSec) * pxPerSec,
-              });
-
-              const onMove = (ev: MouseEvent) => {
-                const rawX    = ev.clientX - trackLeft;
-                const localT  = Math.max(0, Math.min(scene.duration, rawX / pxPerSec));
-                const globalT = scene.startTime + localT;
-
-                // Direct DOM update — no React re-render during drag
-                if (lineRef.current) {
-                  lineRef.current.style.left = `${LABEL_W + localT * pxPerSec + 16}px`;
-                }
-
-                // Throttle store seek to avoid flooding
-                onSeek(globalT);
-              };
-
-              const onUp = () => {
-                window.removeEventListener("mousemove", onMove);
-                window.removeEventListener("mouseup",   onUp);
-              };
-
-              window.addEventListener("mousemove", onMove);
-              window.addEventListener("mouseup",   onUp);
+              pointerEvents: "none", // Allow clicks to pass through to underlying elements
             }}
           >
             {/* Visible line */}
@@ -666,17 +630,57 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
               pointerEvents: "none",
             }} />
             {/* Diamond handle — easy to see and grab */}
-            <div style={{
-              position: "absolute",
-              top: 6,
-              left: "50%",
-              transform: "translateX(-50%) rotate(45deg)",
-              width: 10, height: 10,
-              background: COLORS.playhead,
-              border: "2px solid #fff",
-              borderRadius: 2,
-              pointerEvents: "none",
-            }} />
+            <div
+              style={{
+                position: "absolute",
+                top: 6,
+                left: "50%",
+                transform: "translateX(-50%) rotate(45deg)",
+                width: 12, height: 12,
+                background: COLORS.playhead,
+                border: "2px solid #fff",
+                borderRadius: 2,
+                pointerEvents: "auto", // Intercept pointer events strictly on the diamond
+                cursor: "ew-resize",
+              }}
+              onMouseDown={e => {
+                e.stopPropagation();
+                e.preventDefault();
+
+                // Capture the playhead wrapper element (parent of this handle)
+                const playheadEl = (e.currentTarget as HTMLDivElement).parentElement!;
+                
+                // Capture the scene section container — grandparent of this handle
+                const sectionEl = playheadEl.parentElement!;
+                const sectionRect = sectionEl.getBoundingClientRect();
+                
+                const scrollEl   = sectionEl.closest("[data-timeline-scroll]") as HTMLElement;
+                const scrollLeft = scrollEl ? scrollEl.scrollLeft : 0;
+                const trackLeft  = sectionRect.left + LABEL_W - scrollLeft + 14;
+
+                const onMove = (ev: MouseEvent) => {
+                  const rawX    = ev.clientX - trackLeft;
+                  const localT  = Math.max(0, Math.min(scene.duration, rawX / pxPerSec));
+                  const globalT = scene.startTime + localT;
+
+                  // Direct DOM update — no React re-render during drag
+                  if (playheadEl) {
+                    playheadEl.style.left = `${LABEL_W + localT * pxPerSec + 16}px`;
+                  }
+
+                  // Throttle store seek to avoid flooding
+                  onSeek(globalT);
+                };
+
+                const onUp = () => {
+                  window.removeEventListener("mousemove", onMove);
+                  window.removeEventListener("mouseup",   onUp);
+                };
+
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup",   onUp);
+              }}
+            />
           </div>
         );
       })()}
@@ -698,11 +702,15 @@ interface TimelinePanelProps {
   onExport: () => void;
   selectedId: string | null;
   onAddCameraKeyframe: () => void;
+  selectedKfTime: number | null;
+  setSelectedKfTime: (time: number | null) => void;
+  onPreviewVideo?: () => void;
 }
 
 export function TimelinePanel({
   currentTime, totalDuration, isPlaying, exporting,
-  exportFormat, onScrub, onPlay, onReset, onExport, selectedId, onAddCameraKeyframe,
+  exportFormat, onScrub: _onScrub, onPlay, onReset, onExport, selectedId, onAddCameraKeyframe,
+  selectedKfTime, setSelectedKfTime,
 }: TimelinePanelProps) {
   const [panelExpanded, setPanelExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -712,16 +720,15 @@ export function TimelinePanel({
   // Per-scene collapse state: Set of scene IDs that are collapsed
   const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(() => new Set());
 
-  const [selectedKfTime, setSelectedKfTime] = useState<number | null>(null);
-
   const [, forceUpdate] = useState(0);
   useEffect(() => {
-    return sceneStore.subscribe(() => forceUpdate(n => n + 1));
+    const unsubscribe = sceneStore.subscribe(() => forceUpdate(n => n + 1));
+    return () => { unsubscribe(); };
   }, []);
 
   const handleSelectKf = useCallback((time: number) => {
-    setSelectedKfTime(prev => (prev !== null && Math.abs(prev - time) < 0.05) ? null : time);
-  }, []);
+    setSelectedKfTime((selectedKfTime !== null && Math.abs(selectedKfTime - time) < 0.05) ? null : time);
+  }, [selectedKfTime, setSelectedKfTime]);
 
   const toggleScene = useCallback((sceneId: string) => {
     setCollapsedScenes(prev => {
@@ -790,6 +797,29 @@ export function TimelinePanel({
         >
           🎥 +KF
         </button>
+
+        {/* Delete camera keyframe button */}
+        {selectedKfTime !== null && (
+          <button
+            onClick={() => {
+              const activeScene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+              if (activeScene) {
+                sceneStore.removeCameraKeyframe(activeScene.id, selectedKfTime);
+                setSelectedKfTime(null);
+              }
+            }}
+            title={`Delete selected camera keyframe at ${selectedKfTime.toFixed(2)}s`}
+            style={{
+              ...ctrlBtn(),
+              color: "#ef4444",
+              border: "1px solid rgba(239,68,68,0.4)",
+              background: "rgba(239,68,68,0.08)",
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            🎥 -KF
+          </button>
+        )}
 
         {/* Time */}
         <span style={{ color: COLORS.muted, fontSize: 10, minWidth: 80, fontFamily: "monospace" }}>
