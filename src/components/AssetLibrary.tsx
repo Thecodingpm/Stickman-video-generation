@@ -495,7 +495,7 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
       strokeWidth: 3,
       fillColor:   "transparent",
       startTime:   getLocalTime(),
-      duration:    1.2,
+      duration:    getPathDrawDuration(pathData),
       easing:      SvgEasing.easeInOut,
     });
     editorStore.select(id, "svg");
@@ -523,7 +523,7 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
       strokeWidth: 3,
       fillColor:   "transparent",
       startTime:   getLocalTime(),
-      duration:    2.0,
+      duration:    getPathDrawDuration(pathData),
       easing:      SvgEasing.easeInOutCubic,
     });
     editorStore.select(id, "svg");

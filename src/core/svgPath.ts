@@ -324,7 +324,7 @@ function getSubPathCache(obj: SvgPathObject): SubPathCache {
 export function getSubPathProgress(
   obj: SvgPathObject,
   globalProgress: number
-): { subIdx: number; localProgress: number; cached: CachedPath } | null {
+): { subIdx: number; localProgress: number; cached: CachedPath; isPause?: boolean; pauseProgress?: number; nextCached?: CachedPath } | null {
   const subs = getEffectiveSubPaths(obj);
   if (subs.length <= 1) {
     // Single path — trivial
@@ -337,14 +337,27 @@ export function getSubPathProgress(
     const b = sc.boundaries[i];
     if (globalProgress >= b.start && globalProgress <= b.end) {
       if (globalProgress > b.drawEnd) {
-        // In the pause between sub-paths — return last sub at 100%
-        return { subIdx: i, localProgress: 1, cached: sc.paths[i] };
+        // We are in the pause between sub-path i and i+1
+        const nextIdx = Math.min(sc.boundaries.length - 1, i + 1);
+        const pauseProgress = (globalProgress - b.drawEnd) / (b.end - b.drawEnd);
+        return {
+          subIdx: i,
+          localProgress: 1,
+          cached: sc.paths[i],
+          isPause: true,
+          pauseProgress: Math.min(1, Math.max(0, pauseProgress)),
+          nextCached: sc.paths[nextIdx],
+        };
       }
       const localProgress = (globalProgress - b.start) / (b.drawEnd - b.start);
-      return { subIdx: i, localProgress: Math.min(1, Math.max(0, localProgress)), cached: sc.paths[i] };
+      return {
+        subIdx: i,
+        localProgress: Math.min(1, Math.max(0, localProgress)),
+        cached: sc.paths[i],
+      };
     }
   }
-  // Past end
+
   const last = sc.boundaries.length - 1;
   return { subIdx: last, localProgress: 1, cached: sc.paths[last] };
 }
@@ -362,6 +375,48 @@ export function getSvgTipAtProgress(
     const c = getCachedPath(obj);
     const p = c.pathEl.getPointAtLength(0);
     return { x: obj.x + p.x * (obj.scaleX ?? 1), y: obj.y + p.y * (obj.scaleY ?? 1), dx: 1, dy: 0 };
+  }
+
+  const sx = obj.scaleX ?? 1;
+  const sy = obj.scaleY ?? 1;
+
+  if (sp.isPause && sp.pauseProgress !== undefined && sp.nextCached) {
+    // ── LIFT TRANSITION PATH INTERPOLATOR ──
+    // Organically sweep the pen in the air from end of current sub-path to start of next sub-path
+    let pEnd = { x: 0, y: 0 };
+    let pStart = { x: 0, y: 0 };
+    try {
+      if (typeof document !== "undefined") {
+        pEnd = sp.cached.pathEl.getPointAtLength(sp.cached.totalLength);
+        pStart = sp.nextCached.pathEl.getPointAtLength(0);
+      } else {
+        // Headless coordinate fallback parser
+        const endSub = getEffectiveSubPaths(obj)[sp.subIdx];
+        const nextSub = getEffectiveSubPaths(obj)[Math.min(getEffectiveSubPaths(obj).length - 1, sp.subIdx + 1)];
+        const mMatchEnd = endSub.match(/(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)\s*$/);
+        if (mMatchEnd) pEnd = { x: parseFloat(mMatchEnd[1]), y: parseFloat(mMatchEnd[2]) };
+        const mMatchStart = nextSub.match(/[Mm]\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)/);
+        if (mMatchStart) pStart = { x: parseFloat(mMatchStart[1]), y: parseFloat(mMatchStart[2]) };
+      }
+    } catch (e) {
+      // Fallback
+    }
+
+    const t = sp.pauseProgress;
+    const easedT = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+    const targetX = pEnd.x + (pStart.x - pEnd.x) * easedT;
+    const targetY = pEnd.y + (pStart.y - pEnd.y) * easedT;
+
+    const airLiftMax = 15; // arc upward height
+    const lift = Math.sin(easedT * Math.PI) * airLiftMax;
+
+    return {
+      x: obj.x + targetX * sx + lift * 0.3,
+      y: obj.y + targetY * sy - lift,
+      dx: (pStart.x - pEnd.x) * sx,
+      dy: (pStart.y - pEnd.y) * sy,
+    };
   }
 
   const { cached, localProgress } = sp;
@@ -774,11 +829,12 @@ export function getPathDrawDuration(pathData: string): number {
     document.body.appendChild(svg);
     const len = path.getTotalLength();
     document.body.removeChild(svg);
-    if (isNaN(len) || len <= 0) return 0.8;
-    return Math.min(2.5, Math.max(0.4, len / 800));
+    if (isNaN(len) || len <= 0) return 1.5;
+    // Organic whiteboard drawing pace: length / 350, capped at a premium 6.5s limit
+    return Math.min(6.5, Math.max(1.0, len / 350));
   } catch (e) {
     console.warn("Failed to measure path length for duration:", e);
-    return Math.min(2.5, Math.max(0.4, pathData.length * 0.005));
+    return Math.min(6.5, Math.max(1.0, pathData.length * 0.008));
   }
 }
 
