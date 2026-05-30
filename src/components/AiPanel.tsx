@@ -4,16 +4,16 @@ import { editorStore } from "../store/editorStore";
 import { compileStoryboardToProject } from "../core/storyboardCompiler";
 
 const COLORS = {
-  bg: "#0c1117",
-  surface: "#141920",
-  border: "rgba(99,102,241,0.18)",
-  accent: "#6366f1",
-  accentDim: "rgba(99,102,241,0.12)",
-  text: "#e2e8f0",
-  muted: "#64748b",
-  success: "#10b981",
+  bg: "#121214",
+  surface: "#1a1a1e",
+  border: "rgba(255,255,255,0.08)",
+  accent: "#ffffff",
+  accentDim: "rgba(255,255,255,0.06)",
+  text: "#f4f4f5",
+  muted: "#8e8e93",
+  success: "#34d399",
   error: "#ef4444",
-  glassBg: "rgba(20, 25, 32, 0.7)",
+  glassBg: "rgba(26, 26, 30, 0.75)",
 };
 
 const SUGGESTIONS = [
@@ -261,12 +261,11 @@ ${rawSvg}
     setErrorMsg("");
 
     const systemPrompt = `
-You are an AI "Video Director" for a whiteboard animation engine.
+You are an AI "Video Director" and master Vector Artist for a whiteboard animation engine.
 
-Your job is NOT to create a video.
-Your job is ONLY to convert a script or topic request into a structured animation plan that the rendering engine will execute.
+Your job is to convert a script or topic request into a structured animation plan that the rendering engine will execute.
 
-The engine already handles:
+The engine handles:
 - text box rendering
 - font selection
 - color system
@@ -276,17 +275,14 @@ The engine already handles:
 - timeline rendering
 - SVG drawing animations
 
-DO NOT repeat or redefine these capabilities.
-
 -------------------------
 RULES
 -------------------------
-1. DO NOT output pixel coordinates.
-2. DO NOT manually design layouts.
+1. DO NOT output pixel coordinates for objects.
+2. DO NOT manually design layout positions.
 3. DO NOT specify exact fonts or hex colors unless explicitly required.
 4. DO NOT create frame-by-frame animations.
 5. DO NOT assume missing engine features exist.
-6. DO NOT repeat tasks already handled by the engine.
 
 -------------------------
 WHAT YOU MUST DO
@@ -298,40 +294,23 @@ WHAT YOU MUST DO
 2. Extract meaning
 For each scene identify:
 - key concept (key_idea)
-- important keywords
+- narration script explaining the concept clearly
 - required visuals (diagram, icon, object, text)
 - emphasis level
 
-3. Choose animation INTENT (not execution)
+3. Choose animation INTENT:
+TEXT ANIMATIONS: fade_in, write_on, highlight, slide_up
+OBJECT ANIMATIONS: appear, draw, zoom_focus, pulse
+CAMERA: zoom_in, zoom_out, pan_center, static
 
-TEXT ANIMATIONS:
-- fade_in
-- write_on
-- highlight
-- slide_up
-
-OBJECT ANIMATIONS:
-- appear
-- draw
-- zoom_focus
-- pulse
-
-CAMERA:
-- zoom_in
-- zoom_out
-- pan_center
-- static
-
-4. Diagram handling
-- Only describe diagram type (ERD, flowchart, cycle, etc.)
-- DO NOT draw diagrams
-- DO NOT position diagrams
+4. Custom Vector Artwork (CRITICAL FOR HIGHEST QUALITY):
+- Basic icons (like a star or checkmark) are boring.
+- For concepts like "Brain with gears", "AI Model", "Machine Learning data flow", "Neural Network", "Robot", "Processor", "Server rack", or any other tailored whiteboard illustration, you MUST provide beautiful, custom-crafted SVG path data in the "customSvg" string property!
+- The "customSvg" must contain a single compound SVG path (or clean connected path strokes using M, L, C, S, Q, T, Z commands) normalized to fit within a 0 to 100 viewbox coordinate space.
+- Make the SVG path represent the actual concept in elegant, single-stroke whiteboard outlines (no thick solids or fills, fill="none" is assumed). Use beautiful lines so it looks naturally hand-drawn.
 
 5. Timing
-Use:
-- short (3–5 sec)
-- medium (5–8 sec)
-- long (8–12 sec)
+Use: short (3–5 sec), medium (5–8 sec), long (8–12 sec)
 
 -------------------------
 OUTPUT FORMAT (STRICT JSON ONLY)
@@ -347,9 +326,10 @@ Return ONLY valid JSON matching this schema:
       "visuals": [
         {
           "type": "text" | "diagram" | "icon" | "object",
-          "content": "Description of the visual (e.g. sun, startup idea, user interface)",
+          "content": "Description of the visual (e.g. startup idea, user interface)",
           "animation": "fade_in" | "write_on" | "draw" | "appear" | "highlight",
-          "emphasis": "low" | "medium" | "high"
+          "emphasis": "low" | "medium" | "high",
+          "customSvg": "Optional beautiful custom single-stroke compound SVG path data (only M, L, C, Q, Z coordinates) normalized to a 0..100 area. E.g. M 10 10 L 90 90..."
         }
       ],
       "camera": "zoom_in" | "zoom_out" | "pan_center" | "static",
@@ -399,7 +379,8 @@ Vibe requirement: ${vibe}
                           type: { type: "STRING", enum: ["text", "diagram", "icon", "object"] },
                           content: { type: "STRING" },
                           animation: { type: "STRING", enum: ["fade_in", "write_on", "draw", "appear", "highlight"] },
-                          emphasis: { type: "STRING", enum: ["low", "medium", "high"] }
+                          emphasis: { type: "STRING", enum: ["low", "medium", "high"] },
+                          customSvg: { type: "STRING", description: "Beautiful custom single-stroke compound SVG path data (only M, L, C, Q, Z coordinates) normalized to a 0..100 area. Required for custom tech/educational shapes like brains, neural nets, servers, processors, etc." }
                         },
                         required: ["type", "content", "animation", "emphasis"]
                       }
@@ -760,8 +741,8 @@ Vibe requirement: ${vibe}
               padding: "4px 8px",
               borderRadius: 20,
               border: `1px solid ${COLORS.border}`,
-              background: "rgba(99,102,241,0.06)",
-              color: COLORS.accent,
+              background: "rgba(255,255,255,0.03)",
+              color: COLORS.text,
               fontSize: 9,
               cursor: "pointer",
               transition: "all 0.15s",
@@ -771,7 +752,7 @@ Vibe requirement: ${vibe}
               e.currentTarget.style.borderColor = COLORS.accent;
             }}
             onMouseOut={(e) => {
-              e.currentTarget.style.background = "rgba(99,102,241,0.06)";
+              e.currentTarget.style.background = "rgba(255,255,255,0.03)";
               e.currentTarget.style.borderColor = COLORS.border;
             }}
           >
@@ -805,15 +786,15 @@ Vibe requirement: ${vibe}
           padding: "12px 16px",
           borderRadius: 8,
           border: "none",
-          background: loading ? "rgba(99,102,241,0.3)" : `linear-gradient(135deg, ${COLORS.accent}, #4f46e5)`,
-          color: "#ffffff",
+          background: loading ? "rgba(255, 255, 255, 0.1)" : `linear-gradient(135deg, ${COLORS.accent}, #71717a)`,
+          color: loading ? "#71717a" : "#08080a",
           fontWeight: 600,
           fontSize: 12,
           cursor: loading ? "default" : "pointer",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: loading ? "none" : "0 4px 12px rgba(99, 102, 241, 0.25)",
+          boxShadow: loading ? "none" : "0 4px 12px rgba(255, 255, 255, 0.1)",
         }}
       >
         {loading ? (
@@ -823,7 +804,7 @@ Vibe requirement: ${vibe}
                 width: 12,
                 height: 12,
                 borderRadius: "50%",
-                border: "2px solid #ffffff",
+                border: "2px solid #08080a",
                 borderTopColor: "transparent",
                 animation: "spin 0.8s linear infinite",
                 display: "inline-block",
@@ -842,7 +823,7 @@ Vibe requirement: ${vibe}
           style={{
             padding: 12,
             borderRadius: 8,
-            background: "rgba(99,102,241,0.06)",
+            background: "rgba(255, 255, 255, 0.03)",
             border: `1px solid ${COLORS.border}`,
             display: "flex",
             flexDirection: "column",

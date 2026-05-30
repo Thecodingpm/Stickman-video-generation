@@ -1,42 +1,38 @@
 /**
- * SVG Path → Canvas draw animation system.
+ * SVG Path -> Canvas draw animation system.
  * VideoScribe-quality: variable speed, pressure simulation, organic feel.
  */
 
 import { interpolateTransform } from "./transformInterpolator";
 import type { TransformTracks } from "./transformInterpolator";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
 export interface SvgPathObject {
-  id:          string;
-  groupId?:    string;       // groups paths imported together
-  pathData:    string;       // raw SVG d="..." string
-  x:           number;       // world-space offset
-  y:           number;
-  scaleX?:     number;       // default 1
-  scaleY?:     number;
+  id: string;
+  groupId?: string;
+  pathData: string;
+  x: number;
+  y: number;
+  scaleX?: number;
+  scaleY?: number;
   strokeColor: string;
   strokeWidth: number;
-  fillColor?:  string;       // fill shown after draw completes (optional)
-  startTime:   number;
-  duration:    number;
-  easing?:     EasingFn;
+  fillColor?: string;
+  startTime: number;
+  duration: number;
+  easing?: EasingFn;
 
-  // ── VideoScribe-quality draw controls ─────────────────────────────────────
-  drawOrder?:    number;     // Configurable draw order (lower = drawn first)
-  handVisible?:  boolean;    // If false, hand is hidden while this object draws
-  handOffsetX?:  number;     // World-unit nudge of hand tip X from path point
-  handOffsetY?:  number;     // World-unit nudge of hand tip Y from path point
-  startDelay?:   number;     // Extra delay (seconds) before this path begins
-  subPaths?:     string[];   // Pre-split sub-paths for compound shapes (M…Z M…Z)
-  opacity?:      number;     // Global opacity (0–1, default 1)
-  rotation?:     number;     // Rotation in radians around object center
-
-  // ── Per-object keyframe transform tracks ─────────────────────────────────
-  // Optional — drives smooth position/scale/rotation/opacity animation
-  // using the same unified keyframe engine as AnimatedObject.
+  drawOrder?: number;
+  handVisible?: boolean;
+  handOffsetX?: number;
+  handOffsetY?: number;
+  startDelay?: number;
+  subPaths?: string[];
+  opacity?: number;
+  rotation?: number;
   transformTracks?: TransformTracks;
+
+  // "stroke" = real path sketch, "fill" = brush fill reveal, "image" = mask-style reveal
+  drawMode?: "stroke" | "fill" | "image";
 }
 
 export type HandDrawQuality = "organic" | "premiumSmooth";
@@ -48,36 +44,124 @@ export function setHandDrawQuality(q: HandDrawQuality) {
 export type EasingFn = (t: number) => number;
 
 export const SvgEasing = {
-  linear:    (t: number) => t,
-  easeIn:    (t: number) => t * t,
-  easeOut:   (t: number) => t * (2 - t),
-  easeInOut: (t: number) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t,
-  // Smoother cubic — best for drawing animations
-  easeInOutCubic: (t: number) => t < 0.5
-    ? 4 * t * t * t
-    : 1 - Math.pow(-2 * t + 2, 3) / 2,
+  linear: (t: number) => t,
+  easeIn: (t: number) => t * t,
+  easeOut: (t: number) => t * (2 - t),
+  easeInOut: (t: number) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+  easeInOutCubic: (t: number) =>
+    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
 } as const;
 
-// ── Compound path splitting ───────────────────────────────────────────────────
+interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
-/**
- * Splits a compound path (multiple M commands separated by Z or implicit)
- * into individual sub-paths. Used for VideoScribe-style sequential sub-path drawing.
- *
- * Example: "M 0 0 L 10 0 Z M 20 0 L 30 0" → ["M 0 0 L 10 0 Z", "M 20 0 L 30 0"]
- */
+interface CachedPath {
+  path2D: Path2D;
+  totalLength: number;
+  pathEl: SVGPathElement;
+  svgEl: SVGSVGElement;
+  bounds: Bounds;
+}
+
+interface SubPathCache {
+  subs: string[];
+  paths: CachedPath[];
+  lengths: number[];
+  totalLength: number;
+  boundaries: { start: number; end: number; drawEnd: number }[];
+}
+
+interface SpeedMap {
+  cumulativeAdjusted: Float64Array;
+  totalAdjusted: number;
+  sampleCount: number;
+}
+
+const pathCache = new Map<string, CachedPath>();
+const subPathCache = new Map<string, SubPathCache>();
+const speedMapCache = new Map<string, SpeedMap>();
+const SPEED_SAMPLES = 200;
+
+function clamp01(n: number): number {
+  return Math.min(1, Math.max(0, n));
+}
+
+function isDrawableColor(color: string | undefined | null): boolean {
+  if (!color) return false;
+  const c = color.trim().toLowerCase();
+  return !!c && c !== "none" && c !== "transparent" && !c.startsWith("url(");
+}
+
+function hasDrawableStroke(obj: SvgPathObject): boolean {
+  return isDrawableColor(obj.strokeColor) && (obj.strokeWidth ?? 0) > 0;
+}
+
+export function getSvgDrawMode(obj: SvgPathObject): "stroke" | "fill" | "image" {
+  if (obj.drawMode) return obj.drawMode;
+  if (!hasDrawableStroke(obj) && isDrawableColor(obj.fillColor)) return "fill";
+  return "stroke";
+}
+
+function getActiveStrokeColor(obj: SvgPathObject): string {
+  if (isDrawableColor(obj.strokeColor)) return obj.strokeColor;
+  if (isDrawableColor(obj.fillColor)) return obj.fillColor!;
+  return "#334155";
+}
+
+function makeBounds(x: number, y: number, width: number, height: number): Bounds {
+  return {
+    x,
+    y,
+    width: Math.max(1, width),
+    height: Math.max(1, height),
+  };
+}
+
+function samplePathBounds(pathEl: SVGPathElement, totalLength: number): Bounds {
+  if (!Number.isFinite(totalLength) || totalLength <= 0) return makeBounds(0, 0, 1, 1);
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const samples = 96;
+
+  for (let i = 0; i <= samples; i++) {
+    const p = pathEl.getPointAtLength((i / samples) * totalLength);
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+
+  if (!Number.isFinite(minX)) return makeBounds(0, 0, 1, 1);
+  return makeBounds(minX, minY, maxX - minX, maxY - minY);
+}
+
+function getPathBounds(pathEl: SVGPathElement, totalLength: number): Bounds {
+  try {
+    const b = pathEl.getBBox();
+    if (b && Number.isFinite(b.x) && Number.isFinite(b.y)) {
+      return makeBounds(b.x, b.y, b.width, b.height);
+    }
+  } catch {
+    // Fall through to sampling.
+  }
+  return samplePathBounds(pathEl, totalLength);
+}
+
 export function splitCompoundPath(pathData: string): string[] {
   if (!pathData || !pathData.trim()) return [pathData];
 
-  // Split on M/m commands that aren't the first character
-  // We find each move-to that starts a new sub-path
   const parts: string[] = [];
-  // Regex: split before uppercase M or lowercase m that follows at least one non-whitespace char
-  const segments = pathData.split(/(?=[Mm])/).filter(s => s.trim());
+  const segments = pathData.split(/(?=[Mm])/).filter((s) => s.trim());
 
   if (segments.length <= 1) return [pathData];
 
-  // Recombine segments that are just coordinate continuations (no actual move)
   let current = "";
   for (const seg of segments) {
     if ((seg.startsWith("M") || seg.startsWith("m")) && current) {
@@ -87,64 +171,47 @@ export function splitCompoundPath(pathData: string): string[] {
       current += (current ? " " : "") + seg;
     }
   }
-  if (current.trim()) parts.push(current.trim());
 
+  if (current.trim()) parts.push(current.trim());
   return parts.length > 1 ? parts : [pathData];
 }
 
-/**
- * Optimizes the drawing sequence of compound SVG sub-paths using a Nearest-Neighbor TSP heuristic.
- * Sorts segments to minimize visual hand teleportation.
- */
 export function optimizeSubPaths(subs: string[], objId: string): string[] {
   if (subs.length <= 1) return subs;
 
-  // Measure start and end coordinates of each sub-path segment
   const entries = subs.map((sub, idx) => {
-    // Generate a temporary CachedPath to measure coordinates
     const c = getCachedPath(`tsp_temp_${objId}__sub${idx}`, sub);
     let startPt = { x: 0, y: 0 };
     let endPt = { x: 0, y: 0 };
+
     try {
       if (typeof document !== "undefined") {
         startPt = c.pathEl.getPointAtLength(0);
         endPt = c.pathEl.getPointAtLength(c.totalLength);
       } else {
-        // High-fidelity fallback coordinate parser for headless environments
         const mMatch = sub.match(/[Mm]\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)/);
-        if (mMatch) {
-          startPt = { x: parseFloat(mMatch[1]), y: parseFloat(mMatch[2]) };
+        if (mMatch) startPt = { x: parseFloat(mMatch[1]), y: parseFloat(mMatch[2]) };
+
+        const allNums = sub.match(/(-?\d+\.?\d*)/g);
+        if (allNums && allNums.length >= 2) {
+          endPt = {
+            x: parseFloat(allNums[allNums.length - 2]),
+            y: parseFloat(allNums[allNums.length - 1]),
+          };
         }
-        // Match numbers at the end of the path
-        const coordsMatches = Array.from(sub.matchAll(/(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)\s*$/g));
-        if (coordsMatches.length > 0) {
-          const last = coordsMatches[coordsMatches.length - 1];
-          endPt = { x: parseFloat(last[1]), y: parseFloat(last[2]) };
-        } else {
-          const allNums = sub.match(/(-?\d+\.?\d*)/g);
-          if (allNums && allNums.length >= 2) {
-            endPt = {
-              x: parseFloat(allNums[allNums.length - 2]),
-              y: parseFloat(allNums[allNums.length - 1])
-            };
-          } else {
-            endPt = { ...startPt };
-          }
-        }
-        if (sub.trim().endsWith("Z") || sub.trim().endsWith("z")) {
-          endPt = { ...startPt };
-        }
+
+        if (sub.trim().endsWith("Z") || sub.trim().endsWith("z")) endPt = { ...startPt };
       }
-    } catch (e) {
-      // Fallback if measurement fails in mock environment
+    } catch {
+      // Keep fallback points.
     }
+
     return { sub, startPt, endPt };
   });
 
   const optimized: string[] = [];
   const visited = new Set<number>();
 
-  // Find the segment that starts closest to the top-left (0,0) as the starting point
   let currentIdx = 0;
   let minVal = Infinity;
   for (let i = 0; i < entries.length; i++) {
@@ -166,77 +233,62 @@ export function optimizeSubPaths(subs: string[], objId: string): string[] {
     for (let i = 0; i < entries.length; i++) {
       if (visited.has(i)) continue;
       const targetStart = entries[i].startPt;
-      const dx = targetStart.x - currentEnd.x;
-      const dy = targetStart.y - currentEnd.y;
-      const dist = Math.max(0.001, Math.hypot(dx, dy));
+      const dist = Math.hypot(targetStart.x - currentEnd.x, targetStart.y - currentEnd.y);
       if (dist < minDist) {
         minDist = dist;
         nextIdx = i;
       }
     }
 
-    if (nextIdx !== -1) {
-      optimized.push(entries[nextIdx].sub);
-      visited.add(nextIdx);
-      currentIdx = nextIdx;
-    } else {
-      break;
-    }
+    if (nextIdx === -1) break;
+    optimized.push(entries[nextIdx].sub);
+    visited.add(nextIdx);
+    currentIdx = nextIdx;
   }
 
   return optimized;
 }
 
-// ── Path cache ────────────────────────────────────────────────────────────────
-
-interface CachedPath {
-  path2D:      Path2D;
-  totalLength: number;
-  pathEl:      SVGPathElement;   // keep for point sampling
-  svgEl:       SVGSVGElement;    // parent SVG element
-}
-
-const pathCache = new Map<string, CachedPath>();
-
-/**
- * Returns (and caches) a Path2D + SVGPathElement + its total stroke length.
- * Accepts either an SvgPathObject or explicit (id, pathData) pair for sub-path caching.
- */
 export function getCachedPath(obj: SvgPathObject): CachedPath;
 export function getCachedPath(id: string, pathData: string): CachedPath;
 export function getCachedPath(objOrId: SvgPathObject | string, pathData?: string): CachedPath {
-  const id   = typeof objOrId === "string" ? objOrId : objOrId.id;
+  const id = typeof objOrId === "string" ? objOrId : objOrId.id;
   const data = typeof objOrId === "string" ? pathData! : objOrId.pathData;
   const cacheKey = `${id}__${data}`;
   if (pathCache.has(cacheKey)) return pathCache.get(cacheKey)!;
 
-  // Headless/Node environment safety guard
   if (typeof document === "undefined") {
+    const fallbackLength = Math.max(10, data.length * 0.5);
     const entry = {
       path2D: {} as any,
-      totalLength: Math.max(10, data.length * 0.5),
+      totalLength: fallbackLength,
       pathEl: {
         getPointAtLength: () => ({ x: 0, y: 0 }),
-        getTotalLength: () => Math.max(10, data.length * 0.5),
-        setAttribute: () => {},
+        getTotalLength: () => fallbackLength,
+        getAttribute: () => data,
+        setAttribute: () => { },
       } as any,
       svgEl: {
-        appendChild: () => {},
-      } as any
+        appendChild: () => { },
+      } as any,
+      bounds: makeBounds(0, 0, fallbackLength, fallbackLength),
     };
     pathCache.set(cacheKey, entry);
     return entry;
   }
 
   const path2D = new Path2D(data);
-
   const svgNS = "http://www.w3.org/2000/svg";
   const svgEl = document.createElementNS(svgNS, "svg") as SVGSVGElement;
   const pathEl = document.createElementNS(svgNS, "path") as SVGPathElement;
 
   Object.assign(svgEl.style, {
-    position: "absolute", visibility: "hidden",
-    pointerEvents: "none", width: "0", height: "0", overflow: "hidden",
+    position: "absolute",
+    visibility: "hidden",
+    pointerEvents: "none",
+    width: "0",
+    height: "0",
+    overflow: "hidden",
   });
 
   pathEl.setAttribute("d", data);
@@ -246,7 +298,7 @@ export function getCachedPath(objOrId: SvgPathObject | string, pathData?: string
   let totalLength = 0;
   try {
     totalLength = pathEl.getTotalLength();
-    if (isNaN(totalLength) || totalLength <= 0) {
+    if (!Number.isFinite(totalLength) || totalLength <= 0) {
       totalLength = Math.max(10, data.length * 0.5);
     }
   } catch (e) {
@@ -254,33 +306,20 @@ export function getCachedPath(objOrId: SvgPathObject | string, pathData?: string
     totalLength = Math.max(10, data.length * 0.5);
   }
 
-  const entry = { path2D, totalLength, pathEl, svgEl };
+  const bounds = getPathBounds(pathEl, totalLength);
+  const entry = { path2D, totalLength, pathEl, svgEl, bounds };
   pathCache.set(cacheKey, entry);
   return entry;
 }
 
-// ── Sub-path cache ────────────────────────────────────────────────────────────
-
-interface SubPathCache {
-  paths:        CachedPath[];   // one per sub-path
-  lengths:      number[];       // raw SVG length of each sub-path
-  totalLength:  number;         // sum of all sub-path lengths
-  // Boundaries in [0,1] progress space (including micro-pauses)
-  boundaries:   { start: number; end: number; drawEnd: number }[];
-}
-
-const subPathCache = new Map<string, SubPathCache>();
-const SUB_PATH_PAUSE = 0.04; // fraction of total adjusted duration for inter-sub-path pause
-
 function getEffectiveSubPaths(obj: SvgPathObject): string[] {
-  if (obj.subPaths && obj.subPaths.length > 1) {
-    return obj.subPaths;
-  }
+  if (obj.subPaths && obj.subPaths.length > 1) return obj.subPaths;
   return splitCompoundPath(obj.pathData);
 }
 
 function getSubPathCache(obj: SvgPathObject): SubPathCache {
-  const cacheKey = `sub__${obj.id}__${obj.pathData}`;
+  const subKey = obj.subPaths?.join("|") ?? "";
+  const cacheKey = `sub__${obj.id}__${obj.pathData}__${subKey}`;
   if (subPathCache.has(cacheKey)) return subPathCache.get(cacheKey)!;
 
   const rawSubs = getEffectiveSubPaths(obj);
@@ -296,38 +335,43 @@ function getSubPathCache(obj: SvgPathObject): SubPathCache {
 
   const totalLength = lengths.reduce((s, l) => s + l, 0) || 1;
   const n = subs.length;
-  // Total pause budget: n-1 pauses, each SUB_PATH_PAUSE of total
-  const pauseBudget = (n - 1) * SUB_PATH_PAUSE;
-  const drawBudget  = 1 - pauseBudget;
+
+  const maxPauseBudget = 0.25;
+  const rawPauseBudget = (n - 1) * 0.015;
+  const pauseBudget = Math.min(maxPauseBudget, rawPauseBudget);
+  const actualPause = n > 1 ? pauseBudget / (n - 1) : 0;
+  const drawBudget = 1 - pauseBudget;
 
   const boundaries: { start: number; end: number; drawEnd: number }[] = [];
   let cursor = 0;
+
   for (let i = 0; i < n; i++) {
     const fraction = (lengths[i] / totalLength) * drawBudget;
-    const start    = cursor;
-    const drawEnd  = cursor + fraction;
-    const end      = drawEnd + (i < n - 1 ? SUB_PATH_PAUSE : 0);
+    const start = cursor;
+    const drawEnd = cursor + fraction;
+    const end = drawEnd + (i < n - 1 ? actualPause : 0);
     boundaries.push({ start, drawEnd, end });
     cursor = end;
   }
 
-  const entry: SubPathCache = { paths, lengths, totalLength, boundaries };
+  const entry: SubPathCache = { subs, paths, lengths, totalLength, boundaries };
   subPathCache.set(cacheKey, entry);
   return entry;
 }
 
-/**
- * For a compound SVG object, map a global progress value (0→1) to:
- * - which sub-path is currently being drawn
- * - local progress within that sub-path (0→1)
- */
 export function getSubPathProgress(
   obj: SvgPathObject,
   globalProgress: number
-): { subIdx: number; localProgress: number; cached: CachedPath; isPause?: boolean; pauseProgress?: number; nextCached?: CachedPath } | null {
+): {
+  subIdx: number;
+  localProgress: number;
+  cached: CachedPath;
+  isPause?: boolean;
+  pauseProgress?: number;
+  nextCached?: CachedPath;
+} | null {
   const subs = getEffectiveSubPaths(obj);
   if (subs.length <= 1) {
-    // Single path — trivial
     return { subIdx: 0, localProgress: globalProgress, cached: getCachedPath(obj) };
   }
 
@@ -337,7 +381,6 @@ export function getSubPathProgress(
     const b = sc.boundaries[i];
     if (globalProgress >= b.start && globalProgress <= b.end) {
       if (globalProgress > b.drawEnd) {
-        // We are in the pause between sub-path i and i+1
         const nextIdx = Math.min(sc.boundaries.length - 1, i + 1);
         const pauseProgress = (globalProgress - b.drawEnd) / (b.end - b.drawEnd);
         return {
@@ -345,14 +388,15 @@ export function getSubPathProgress(
           localProgress: 1,
           cached: sc.paths[i],
           isPause: true,
-          pauseProgress: Math.min(1, Math.max(0, pauseProgress)),
+          pauseProgress: clamp01(pauseProgress),
           nextCached: sc.paths[nextIdx],
         };
       }
+
       const localProgress = (globalProgress - b.start) / (b.drawEnd - b.start);
       return {
         subIdx: i,
-        localProgress: Math.min(1, Math.max(0, localProgress)),
+        localProgress: clamp01(localProgress),
         cached: sc.paths[i],
       };
     }
@@ -362,89 +406,178 @@ export function getSubPathProgress(
   return { subIdx: last, localProgress: 1, cached: sc.paths[last] };
 }
 
-/**
- * Get the active drawing tip point for a compound SVG at global progress.
- * Used by handDrawer for precise hand placement.
- */
+function applyStaticSvgTransform(
+  obj: SvgPathObject,
+  lx: number,
+  ly: number,
+  ldx: number,
+  ldy: number
+): { x: number; y: number; dx: number; dy: number } {
+  const sx = obj.scaleX ?? 1;
+  const sy = obj.scaleY ?? 1;
+
+  let x = obj.x + lx * sx;
+  let y = obj.y + ly * sy;
+  let dx = ldx * sx;
+  let dy = ldy * sy;
+
+  const rot = obj.rotation ?? 0;
+  if (rot !== 0) {
+    const pivotX = obj.x + sx * 50;
+    const pivotY = obj.y + sy * 50;
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+
+    const rx = x - pivotX;
+    const ry = y - pivotY;
+    x = pivotX + rx * cos - ry * sin;
+    y = pivotY + rx * sin + ry * cos;
+
+    const rdx = dx * cos - dy * sin;
+    const rdy = dx * sin + dy * cos;
+    dx = rdx;
+    dy = rdy;
+  }
+
+  return { x, y, dx, dy };
+}
+
+function getFillSweepSettings(cached: CachedPath, obj: SvgPathObject) {
+  const b = cached.bounds;
+  const minSide = Math.max(1, Math.min(b.width, b.height));
+  const pad = Math.max(5, minSide * 0.05);
+  const left = b.x - pad;
+  const top = b.y - pad;
+  const width = b.width + pad * 2;
+  const height = b.height + pad * 2;
+
+  // Use 8-20 rows depending on shape height
+  const rows = Math.max(8, Math.min(20, Math.round(8 + ((height - 50) / 350) * 12)));
+  const rowH = height / rows;
+
+  // Brush size based on object size (rowH)
+  const brush = Math.max(10, rowH * 1.8);
+
+  return { left, top, width, height, rows, rowH, brush };
+}
+
+function getFillSweepCoords(
+  s: ReturnType<typeof getFillSweepSettings>,
+  row: number,
+  rowFrac: number
+): { x: number; y: number } {
+  const forward = row % 2 === 0;
+  const x = forward
+    ? s.left + s.width * rowFrac
+    : s.left + s.width * (1 - rowFrac);
+
+  const wobbleFreq = 3; // number of cycles per row
+  const wobbleAmp = s.rowH * 0.15; // 15% of row height
+  const wobble = Math.sin(rowFrac * Math.PI * 2 * wobbleFreq + row) * wobbleAmp;
+
+  const y = s.top + row * s.rowH + s.rowH * 0.5 + wobble;
+  return { x, y };
+}
+
+function getFillSweepTip(
+  cached: CachedPath,
+  obj: SvgPathObject,
+  progress: number
+): { x: number; y: number; dx: number; dy: number } {
+  const s = getFillSweepSettings(cached, obj);
+  const p = clamp01(progress);
+  if (p <= 0) {
+    const start = getFillSweepCoords(s, 0, 0);
+    return { x: start.x, y: start.y, dx: 1, dy: 0 };
+  }
+  const sweep = p * s.rows;
+  const row = Math.min(s.rows - 1, Math.floor(sweep));
+  const rowFrac = p >= 1 ? 1 : sweep - row;
+
+  const pt1 = getFillSweepCoords(s, row, rowFrac);
+  const deltaFrac = 0.01;
+  const prevFrac = Math.max(0, rowFrac - deltaFrac);
+  const pt0 = getFillSweepCoords(s, row, prevFrac);
+
+  return {
+    x: pt1.x,
+    y: pt1.y,
+    dx: pt1.x - pt0.x || (row % 2 === 0 ? 1 : -1),
+    dy: pt1.y - pt0.y || 0,
+  };
+}
+
 export function getSvgTipAtProgress(
   obj: SvgPathObject,
   globalProgress: number
-): { x: number; y: number; dx: number; dy: number } {
+): { x: number; y: number; dx: number; dy: number; isPause?: boolean } {
+  const mode = getSvgDrawMode(obj);
+
+  if (mode === "fill" || mode === "image") {
+    const c = getCachedPath(obj);
+    const tip = getFillSweepTip(c, obj, globalProgress);
+    return { ...applyStaticSvgTransform(obj, tip.x, tip.y, tip.dx, tip.dy), isPause: false };
+  }
+
   const sp = getSubPathProgress(obj, globalProgress);
   if (!sp) {
     const c = getCachedPath(obj);
     const p = c.pathEl.getPointAtLength(0);
-    return { x: obj.x + p.x * (obj.scaleX ?? 1), y: obj.y + p.y * (obj.scaleY ?? 1), dx: 1, dy: 0 };
+    return { ...applyStaticSvgTransform(obj, p.x, p.y, 1, 0), isPause: false };
   }
 
-  const sx = obj.scaleX ?? 1;
-  const sy = obj.scaleY ?? 1;
-
   if (sp.isPause && sp.pauseProgress !== undefined && sp.nextCached) {
-    // ── LIFT TRANSITION PATH INTERPOLATOR ──
-    // Organically sweep the pen in the air from end of current sub-path to start of next sub-path
     let pEnd = { x: 0, y: 0 };
     let pStart = { x: 0, y: 0 };
+
     try {
-      if (typeof document !== "undefined") {
-        pEnd = sp.cached.pathEl.getPointAtLength(sp.cached.totalLength);
-        pStart = sp.nextCached.pathEl.getPointAtLength(0);
-      } else {
-        // Headless coordinate fallback parser
-        const endSub = getEffectiveSubPaths(obj)[sp.subIdx];
-        const nextSub = getEffectiveSubPaths(obj)[Math.min(getEffectiveSubPaths(obj).length - 1, sp.subIdx + 1)];
-        const mMatchEnd = endSub.match(/(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)\s*$/);
-        if (mMatchEnd) pEnd = { x: parseFloat(mMatchEnd[1]), y: parseFloat(mMatchEnd[2]) };
-        const mMatchStart = nextSub.match(/[Mm]\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)/);
-        if (mMatchStart) pStart = { x: parseFloat(mMatchStart[1]), y: parseFloat(mMatchStart[2]) };
+      pEnd = sp.cached.pathEl.getPointAtLength(sp.cached.totalLength);
+      pStart = sp.nextCached.pathEl.getPointAtLength(0);
+    } catch {
+      const scSubs = getSubPathCache(obj).subs;
+      const endSub = scSubs[sp.subIdx];
+      const nextSub = scSubs[Math.min(scSubs.length - 1, sp.subIdx + 1)];
+
+      const endNums = endSub.match(/(-?\d+\.?\d*)/g);
+      if (endNums && endNums.length >= 2) {
+        pEnd = {
+          x: parseFloat(endNums[endNums.length - 2]),
+          y: parseFloat(endNums[endNums.length - 1]),
+        };
       }
-    } catch (e) {
-      // Fallback
+
+      const mMatchStart = nextSub.match(/[Mm]\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)/);
+      if (mMatchStart) {
+        pStart = { x: parseFloat(mMatchStart[1]), y: parseFloat(mMatchStart[2]) };
+      }
     }
 
     const t = sp.pauseProgress;
     const easedT = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const lift = Math.sin(easedT * Math.PI) * 15;
 
-    const targetX = pEnd.x + (pStart.x - pEnd.x) * easedT;
-    const targetY = pEnd.y + (pStart.y - pEnd.y) * easedT;
+    const lx = pEnd.x + (pStart.x - pEnd.x) * easedT + lift * 0.3;
+    const ly = pEnd.y + (pStart.y - pEnd.y) * easedT - lift;
+    const dx = pStart.x - pEnd.x;
+    const dy = pStart.y - pEnd.y;
 
-    const airLiftMax = 15; // arc upward height
-    const lift = Math.sin(easedT * Math.PI) * airLiftMax;
-
-    return {
-      x: obj.x + targetX * sx + lift * 0.3,
-      y: obj.y + targetY * sy - lift,
-      dx: (pStart.x - pEnd.x) * sx,
-      dy: (pStart.y - pEnd.y) * sy,
-    };
+    return { ...applyStaticSvgTransform(obj, lx, ly, dx, dy), isPause: true };
   }
 
   const { cached, localProgress } = sp;
-  const len   = cached.totalLength * Math.min(1, Math.max(0, localProgress));
-  const p1    = cached.pathEl.getPointAtLength(len);
-  const p2    = cached.pathEl.getPointAtLength(Math.min(len + 2, cached.totalLength));
+  const smKey = `${obj.id}__sub${sp.subIdx}__${cached.pathEl.getAttribute("d") || ""}`;
+  const speedMap = getSpeedMap(cached.pathEl, cached.totalLength, smKey);
+  const warpedLocalProgress = applyVariableSpeed(localProgress, speedMap);
 
-  const sx = obj.scaleX ?? 1;
-  const sy = obj.scaleY ?? 1;
+  const len = cached.totalLength * clamp01(warpedLocalProgress);
+  const p1 = cached.pathEl.getPointAtLength(len);
+  const p2 = cached.pathEl.getPointAtLength(Math.min(len + 2, cached.totalLength));
 
   return {
-    x:  obj.x + p1.x * sx,
-    y:  obj.y + p1.y * sy,
-    dx: (p2.x - p1.x) * sx,
-    dy: (p2.y - p1.y) * sy,
+    ...applyStaticSvgTransform(obj, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y),
+    isPause: false,
   };
 }
-
-// ── Curvature map cache ───────────────────────────────────────────────────────
-
-interface SpeedMap {
-  cumulativeAdjusted: Float64Array;
-  totalAdjusted:      number;
-  sampleCount:        number;
-}
-
-const speedMapCache = new Map<string, SpeedMap>();
-const SPEED_SAMPLES = 200;
 
 function getSpeedMap(pathEl: SVGPathElement, totalLength: number, cacheKey: string): SpeedMap {
   if (speedMapCache.has(cacheKey)) return speedMapCache.get(cacheKey)!;
@@ -475,12 +608,15 @@ function getSpeedMap(pathEl: SVGPathElement, totalLength: number, cacheKey: stri
     }
 
     const speedMult = 0.3 + (1 - curvature) * 1.2;
-    const adjustedSeg = segLen / speedMult;
-    cumulativeAdjusted[i] = cumulativeAdjusted[i - 1] + adjustedSeg;
+    cumulativeAdjusted[i] = cumulativeAdjusted[i - 1] + segLen / speedMult;
   }
 
-  const totalAdjusted = cumulativeAdjusted[N];
-  const entry: SpeedMap = { cumulativeAdjusted, totalAdjusted, sampleCount: N };
+  const entry: SpeedMap = {
+    cumulativeAdjusted,
+    totalAdjusted: cumulativeAdjusted[N],
+    sampleCount: N,
+  };
+
   speedMapCache.set(cacheKey, entry);
   return entry;
 }
@@ -501,99 +637,151 @@ function applyVariableSpeed(uniformProgress: number, speedMap: SpeedMap): number
   if (lo >= sampleCount) return 1;
 
   const segStart = cumulativeAdjusted[lo - 1];
-  const segEnd   = cumulativeAdjusted[lo];
-  const segFrac  = (segEnd - segStart) > 0
-    ? (targetAdjusted - segStart) / (segEnd - segStart)
-    : 0;
+  const segEnd = cumulativeAdjusted[lo];
+  const segFrac = segEnd - segStart > 0 ? (targetAdjusted - segStart) / (segEnd - segStart) : 0;
 
   return ((lo - 1) + segFrac) / sampleCount;
 }
-
-// ── Progress helper ───────────────────────────────────────────────────────────
 
 export function getSvgProgress(obj: SvgPathObject, currentTime: number): number | null {
   const effectiveStart = obj.startTime + (obj.startDelay ?? 0);
   if (currentTime < effectiveStart) return null;
   if (currentTime > effectiveStart + obj.duration) return 1;
   const raw = (currentTime - effectiveStart) / obj.duration;
-  const t   = Math.min(1, Math.max(0, raw));
-
-  const eased = obj.easing ? obj.easing(t) : SvgEasing.easeInOutCubic(t);
-
-  const { pathEl, totalLength } = getCachedPath(obj);
-  const smKey = `${obj.id}__${obj.pathData}`;
-  const speedMap = getSpeedMap(pathEl, totalLength, smKey);
-  return applyVariableSpeed(eased, speedMap);
+  const t = clamp01(raw);
+  return obj.easing ? obj.easing(t) : SvgEasing.easeInOutCubic(t);
 }
-
-// ── Seeded pseudo-random for consistent micro-imperfections ───────────────────
 
 function seededRandom(seed: number): number {
   const x = Math.sin(seed * 12.9898 + seed * 78.233) * 43758.5453;
   return x - Math.floor(x);
 }
 
-// ── Pressure simulation ──────────────────────────────────────────────────────
-
 function getPressureWidth(baseWidth: number, progress: number, seed: number): number {
-  const freq1 = 7.3;
-  const freq2 = 13.7;
-  const variation1 = Math.sin(progress * Math.PI * freq1 + seed) * 0.4;
-  const variation2 = Math.sin(progress * Math.PI * freq2 + seed * 2.7) * 0.2;
+  const variation1 = Math.sin(progress * Math.PI * 7.3 + seed) * 0.4;
+  const variation2 = Math.sin(progress * Math.PI * 13.7 + seed * 2.7) * 0.2;
   const taper = Math.min(1, progress / 0.05) * Math.min(1, (1 - progress) / 0.05);
   return Math.max(0.5, baseWidth * taper + variation1 + variation2);
 }
 
 function getAlphaColor(color: string | undefined | null, opacity: number): string {
-  if (!color || typeof color !== "string") {
-    return `rgba(99, 102, 241, ${opacity})`;
-  }
+  if (!isDrawableColor(color)) return `rgba(99, 102, 241, ${opacity})`;
 
-  const trimmed = color.trim().toLowerCase();
-
-  if (!trimmed || trimmed === "currentcolor" || trimmed === "none" || trimmed.startsWith("url")) {
-    return `rgba(99, 102, 241, ${opacity})`;
-  }
+  const trimmed = color!.trim().toLowerCase();
 
   if (trimmed.startsWith("#")) {
     const hex = trimmed.substring(1);
     const alphaHex = Math.round(opacity * 255).toString(16).padStart(2, "0");
-    if (hex.length === 3) {
-      const r = hex[0], g = hex[1], b = hex[2];
-      return `#${r}${r}${g}${g}${b}${b}${alphaHex}`;
-    }
+    if (hex.length === 3) return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}${alphaHex}`;
     if (hex.length === 6) return `#${hex}${alphaHex}`;
     if (hex.length === 8) return `#${hex.substring(0, 6)}${alphaHex}`;
   }
 
   if (trimmed.startsWith("rgb")) {
     const matches = trimmed.match(/\d+(\.\d+)?/g);
-    if (matches && matches.length >= 3) {
-      const r = matches[0], g = matches[1], b = matches[2];
-      return `rgba(${r}, ${g}, ${b}, ${opacity})`;
-    }
+    if (matches && matches.length >= 3) return `rgba(${matches[0]}, ${matches[1]}, ${matches[2]}, ${opacity})`;
   }
 
   const namedColors: Record<string, string> = {
-    black: "0,0,0", white: "255,255,255", red: "255,0,0",
-    green: "0,255,0", blue: "0,0,255", yellow: "255,255,0",
-    orange: "255,165,0", purple: "128,0,128", gray: "128,128,128", grey: "128,128,128",
+    black: "0,0,0",
+    white: "255,255,255",
+    red: "255,0,0",
+    green: "0,255,0",
+    blue: "0,0,255",
+    yellow: "255,255,0",
+    orange: "255,165,0",
+    purple: "128,0,128",
+    gray: "128,128,128",
+    grey: "128,128,128",
   };
-  if (namedColors[trimmed]) return `rgba(${namedColors[trimmed]}, ${opacity})`;
 
-  return color;
+  if (namedColors[trimmed]) return `rgba(${namedColors[trimmed]}, ${opacity})`;
+  return color!;
 }
 
-// ── Core draw function ────────────────────────────────────────────────────────
+function addRoundRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+): void {
+  if (w <= 0 || h <= 0) return;
 
-/**
- * Draw one SvgPathObject with organic, hand-drawn quality.
- * Supports compound paths (sub-paths drawn sequentially with natural pauses).
- */
+  const anyCtx = ctx as any;
+  if (typeof anyCtx.roundRect === "function") {
+    anyCtx.roundRect(x, y, w, h, Math.max(0, Math.min(r, w / 2, h / 2)));
+    return;
+  }
+
+  ctx.rect(x, y, w, h);
+}
+
+function drawFillBrushMask(
+  ctx: CanvasRenderingContext2D,
+  obj: SvgPathObject,
+  progress: number,
+  pathData: string,
+  cached: CachedPath
+): void {
+  const fillColor = isDrawableColor(obj.fillColor)
+    ? obj.fillColor!
+    : isDrawableColor(obj.strokeColor)
+      ? obj.strokeColor
+      : "#334155";
+
+  const p = clamp01(progress);
+  const path = new Path2D(pathData);
+
+  if (p >= 0.995) {
+    ctx.fillStyle = fillColor;
+    ctx.fill(path, "evenodd");
+    return;
+  }
+
+  const s = getFillSweepSettings(cached, obj);
+  const sweep = p * s.rows;
+  const activeRow = Math.min(s.rows - 1, Math.floor(sweep));
+  const rowFrac = sweep - activeRow;
+
+  ctx.save();
+  ctx.clip(path, "evenodd");
+
+  ctx.beginPath();
+  let first = true;
+  for (let row = 0; row <= activeRow; row++) {
+    const isActive = row === activeRow;
+    const maxFrac = isActive ? rowFrac : 1;
+    if (maxFrac <= 0 && isActive) continue;
+
+    // Sample points along the row to draw a smooth wobbled line
+    const steps = Math.max(10, Math.ceil(s.width / 10)); // sample every 10px
+    for (let step = 0; step <= steps; step++) {
+      const frac = (step / steps) * maxFrac;
+      const pt = getFillSweepCoords(s, row, frac);
+      if (first) {
+        ctx.moveTo(pt.x, pt.y);
+        first = false;
+      } else {
+        ctx.lineTo(pt.x, pt.y);
+      }
+    }
+  }
+
+  ctx.strokeStyle = fillColor;
+  ctx.lineWidth = s.brush;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 export function drawSvgPath(
   ctx: CanvasRenderingContext2D,
   obj: SvgPathObject,
-  progress: number,   // 0 = nothing drawn, 1 = fully drawn
+  progress: number,
   currentTime?: number
 ): void {
   if (progress <= 0) return;
@@ -618,7 +806,7 @@ export function drawSvgPath(
     rotation += tf.rotation;
   }
 
-  if (opacity !== 1) ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+  ctx.globalAlpha *= clamp01(opacity);
 
   if (rotation !== 0) {
     const pivotX = cx + scaleX * 50;
@@ -631,20 +819,25 @@ export function drawSvgPath(
   ctx.translate(cx, cy);
   ctx.scale(scaleX, scaleY);
 
-  const subs = getEffectiveSubPaths(obj);
-  const hasSubs = subs.length > 1;
+  const mode = getSvgDrawMode(obj);
 
-  if (hasSubs) {
-    _drawCompoundPath(ctx, obj, progress);
+  if (mode === "fill" || mode === "image") {
+    drawFillBrushMask(ctx, obj, progress, obj.pathData, getCachedPath(obj));
+    ctx.restore();
+    return;
+  }
+
+  const subs = getEffectiveSubPaths(obj);
+  if (subs.length > 1) {
+    drawCompoundPath(ctx, obj, progress);
   } else {
-    _drawSinglePath(ctx, obj, progress, obj.pathData, getCachedPath(obj));
+    drawSingleStrokePath(ctx, obj, progress, obj.pathData, getCachedPath(obj));
   }
 
   ctx.restore();
 }
 
-/** Draw a single-path object */
-function _drawSinglePath(
+function drawSingleStrokePath(
   ctx: CanvasRenderingContext2D,
   obj: SvgPathObject,
   progress: number,
@@ -652,45 +845,45 @@ function _drawSinglePath(
   cached: CachedPath
 ): void {
   const { pathEl, totalLength } = cached;
+  const speedMap = getSpeedMap(pathEl, totalLength, `${obj.id}__${pathData}`);
+  const warpedProgress = applyVariableSpeed(progress, speedMap);
+  const path = new Path2D(pathData);
 
   if (progress >= 1) {
-    ctx.lineCap     = "round";
-    ctx.lineJoin    = "round";
-    ctx.strokeStyle = obj.strokeColor;
-    ctx.lineWidth   = obj.strokeWidth;
-    ctx.setLineDash([]);
-    ctx.stroke(new Path2D(pathData));
-
-    if (obj.fillColor) {
-      ctx.fillStyle   = obj.fillColor;
-      ctx.globalAlpha = 1;
-      ctx.fill(new Path2D(pathData), "evenodd");
+    if (hasDrawableStroke(obj)) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = obj.strokeColor;
+      ctx.lineWidth = obj.strokeWidth;
+      ctx.setLineDash([]);
+      ctx.stroke(path);
     }
+
+    if (isDrawableColor(obj.fillColor)) {
+      ctx.fillStyle = obj.fillColor!;
+      ctx.fill(path, "evenodd");
+    }
+
     return;
   }
 
-  const drawnLength = totalLength * Math.min(1, progress);
+  const drawnLength = totalLength * clamp01(warpedProgress);
   const seed = hashCode(obj.id);
   const segCount = Math.max(10, Math.min(150, Math.floor(drawnLength / 3)));
-  const segLen   = drawnLength / segCount;
-
-  const activeStrokeColor = obj.strokeColor && obj.strokeColor !== "none" && obj.strokeColor !== "transparent"
-    ? obj.strokeColor
-    : (obj.fillColor && obj.fillColor !== "transparent" ? obj.fillColor : "#334155");
+  const segLen = segCount > 0 ? drawnLength / segCount : 0;
+  const strokeColor = getActiveStrokeColor(obj);
   const baseWidth = obj.strokeWidth > 0 ? obj.strokeWidth : 2;
 
-  ctx.lineCap   = "round";
-  ctx.lineJoin  = "round";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
   for (let i = 0; i < segCount; i++) {
     const len1 = i * segLen;
     const len2 = Math.min((i + 1) * segLen, drawnLength);
-
     if (len2 <= 0) break;
 
     const pt1 = pathEl.getPointAtLength(len1);
     const pt2 = pathEl.getPointAtLength(len2);
-
     const segProgress = len2 / totalLength;
     const width = getPressureWidth(baseWidth, segProgress, seed);
 
@@ -703,81 +896,68 @@ function _drawSinglePath(
     ctx.beginPath();
     ctx.moveTo(pt1.x + j1x, pt1.y + j1y);
     ctx.lineTo(pt2.x + j2x, pt2.y + j2y);
-    ctx.strokeStyle = activeStrokeColor;
-    ctx.lineWidth   = width;
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = width;
     ctx.stroke();
   }
 
-  // Soft glow at drawing tip
   if (handDrawQuality !== "premiumSmooth" && progress > 0 && progress < 1) {
     const tipPt = pathEl.getPointAtLength(drawnLength);
-    const gradient = ctx.createRadialGradient(
-      tipPt.x, tipPt.y, 0,
-      tipPt.x, tipPt.y, baseWidth * 3,
-    );
-    gradient.addColorStop(0, getAlphaColor(activeStrokeColor, 0.25));
-    gradient.addColorStop(1, getAlphaColor(activeStrokeColor, 0.0));
+    const gradient = ctx.createRadialGradient(tipPt.x, tipPt.y, 0, tipPt.x, tipPt.y, baseWidth * 3);
+    gradient.addColorStop(0, getAlphaColor(strokeColor, 0.25));
+    gradient.addColorStop(1, getAlphaColor(strokeColor, 0));
     ctx.fillStyle = gradient;
     ctx.beginPath();
     ctx.arc(tipPt.x, tipPt.y, baseWidth * 3, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  if (obj.fillColor && progress > 0.85) {
-    const fillAlpha = progress >= 1 ? 1 : (progress - 0.85) / 0.15;
-    ctx.fillStyle   = obj.fillColor;
-    ctx.globalAlpha = fillAlpha;
-    ctx.fill(new Path2D(pathData), "evenodd");
-    ctx.globalAlpha = 1;
+  if (isDrawableColor(obj.fillColor) && progress > 0.85) {
+    const fillAlpha = (progress - 0.85) / 0.15;
+    ctx.save();
+    ctx.globalAlpha *= clamp01(fillAlpha);
+    ctx.fillStyle = obj.fillColor!;
+    ctx.fill(path, "evenodd");
+    ctx.restore();
   }
 }
 
-/** Draw a compound path — each sub-path reveals sequentially */
-function _drawCompoundPath(
+function drawCompoundPath(
   ctx: CanvasRenderingContext2D,
   obj: SvgPathObject,
   globalProgress: number
 ): void {
   const sc = getSubPathCache(obj);
-  const subs = getEffectiveSubPaths(obj);
 
   for (let i = 0; i < sc.paths.length; i++) {
     const b = sc.boundaries[i];
     if (globalProgress < b.start) break;
 
-    let localProg: number;
-    if (globalProgress >= b.drawEnd) {
-      localProg = 1;
-    } else {
-      localProg = (globalProgress - b.start) / (b.drawEnd - b.start);
-    }
+    const localProg =
+      globalProgress >= b.drawEnd ? 1 : (globalProgress - b.start) / (b.drawEnd - b.start);
 
-    _drawSinglePath(
+    drawSingleStrokePath(
       ctx,
       { ...obj, id: `${obj.id}__sub${i}` },
-      Math.min(1, Math.max(0, localProg)),
-      subs[i],
+      clamp01(localProg),
+      sc.subs[i],
       sc.paths[i]
     );
   }
 
-  // Fill — fade in once the last sub-path is near completion
-  if (obj.fillColor) {
+  if (isDrawableColor(obj.fillColor)) {
     const lastB = sc.boundaries[sc.boundaries.length - 1];
-    const fillStartThreshold = lastB.start + (lastB.drawEnd - lastB.start) * 0.85;
-    if (globalProgress > fillStartThreshold) {
-      const fillAlpha = globalProgress >= 1
-        ? 1
-        : Math.min(1, (globalProgress - fillStartThreshold) / 0.15);
-      ctx.fillStyle   = obj.fillColor;
-      ctx.globalAlpha = fillAlpha;
+    const fillStart = lastB.start + (lastB.drawEnd - lastB.start) * 0.85;
+    if (globalProgress > fillStart) {
+      const fillAlpha = globalProgress >= 1 ? 1 : clamp01((globalProgress - fillStart) / 0.15);
+      ctx.save();
+      ctx.globalAlpha *= fillAlpha;
+      ctx.fillStyle = obj.fillColor!;
       ctx.fill(new Path2D(obj.pathData), "evenodd");
-      ctx.globalAlpha = 1;
+      ctx.restore();
     }
   }
 }
-
-// ── Simple string hash for stable randomness ─────────────────────────────────
 
 function hashCode(s: string): number {
   let hash = 0;
@@ -787,18 +967,23 @@ function hashCode(s: string): number {
   return hash;
 }
 
-// ── Batch draw (called from render loop) ─────────────────────────────────────
+function modeRank(obj: SvgPathObject): number {
+  const mode = getSvgDrawMode(obj);
+  if (mode === "stroke") return 0;
+  if (mode === "fill") return 1;
+  return 2;
+}
 
 export function drawAllSvgPaths(
   ctx: CanvasRenderingContext2D,
   objects: SvgPathObject[],
   currentTime: number
 ): void {
-  // Sort by drawOrder (lower = drawn first), fall back to startTime order
   const sorted = [...objects].sort((a, b) => {
     const oa = a.drawOrder ?? a.startTime * 1000;
     const ob = b.drawOrder ?? b.startTime * 1000;
-    return oa - ob;
+    if (oa !== ob) return oa - ob;
+    return modeRank(a) - modeRank(b);
   });
 
   for (const obj of sorted) {
@@ -812,25 +997,21 @@ export function drawAllSvgPaths(
   }
 }
 
-// ── Path-length utilities (used by asset import + hand cursor) ────────────────
-
-/**
- * Compute ideal draw duration based on path length.
- * Longer paths take more time, clamped to a sane range.
- */
 export function getPathDrawDuration(pathData: string): number {
   try {
     const svgNS = "http://www.w3.org/2000/svg";
-    const svg   = document.createElementNS(svgNS, "svg");
-    const path  = document.createElementNS(svgNS, "path");
+    const svg = document.createElementNS(svgNS, "svg");
+    const path = document.createElementNS(svgNS, "path");
+
     svg.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
     path.setAttribute("d", pathData);
     svg.appendChild(path);
     document.body.appendChild(svg);
+
     const len = path.getTotalLength();
     document.body.removeChild(svg);
-    if (isNaN(len) || len <= 0) return 1.5;
-    // Organic whiteboard drawing pace: length / 350, capped at a premium 6.5s limit
+
+    if (!Number.isFinite(len) || len <= 0) return 1.5;
     return Math.min(6.5, Math.max(1.0, len / 350));
   } catch (e) {
     console.warn("Failed to measure path length for duration:", e);
@@ -838,9 +1019,6 @@ export function getPathDrawDuration(pathData: string): number {
   }
 }
 
-/**
- * Get the world-space point at the current draw tip (for hand cursor).
- */
 export function getPathTipPoint(
   obj: SvgPathObject,
   progress: number

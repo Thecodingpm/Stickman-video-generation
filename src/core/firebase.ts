@@ -29,6 +29,7 @@ export interface CloudSvgAsset {
   tags:        string[];
   createdAt:   string;
   isCustom?:   boolean;
+  type?:       "svg" | "image";
 }
 
 // 1. Firebase Credentials Check

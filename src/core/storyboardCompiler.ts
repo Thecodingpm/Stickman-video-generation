@@ -15,6 +15,7 @@ export interface DirectorVisual {
   content: string;
   animation: "fade_in" | "write_on" | "draw" | "appear" | "highlight";
   emphasis: "low" | "medium" | "high";
+  customSvg?: string;
 }
 
 export interface DirectorScene {
@@ -76,6 +77,13 @@ export const THEME_PALETTES: Record<string, ColorPalette> = {
 // Helper to look up SVG shapes by keyword matching
 function getMatchingSvgPath(keyword: string): string {
   const norm = keyword.toLowerCase();
+  
+  // Custom premium whiteboard assets
+  if (norm.includes("brain") || norm.includes("mind") || norm.includes("intelligence") || norm.includes("cortex")) return SVG_SHAPES.aiBrain;
+  if (norm.includes("neural") || norm.includes("nodes") || norm.includes("network") || norm.includes("connection")) return SVG_SHAPES.neuralNetwork;
+  if (norm.includes("learning") || norm.includes("data") || norm.includes("database") || norm.includes("server") || norm.includes("model")) return SVG_SHAPES.machineLearning;
+  if (norm.includes("robot") || norm.includes("bot") || norm.includes("assistant")) return SVG_SHAPES.robot;
+
   if (norm.includes("star") || norm.includes("favorite")) return SVG_SHAPES.star;
   if (norm.includes("check") || norm.includes("success") || norm.includes("done")) return SVG_SHAPES.checkmark;
   if (norm.includes("arrow")) return SVG_SHAPES.arrowRight;
@@ -272,8 +280,8 @@ function hydrateSingleVisual(
       break;
 
     case "icon":
-      // Generate a beautiful SVG illustration matched from content description
-      const pathData = getMatchingSvgPath(vis.content || "");
+      // Generate a beautiful SVG illustration matched from content description or custom AI drawings
+      const pathData = vis.customSvg || getMatchingSvgPath(vis.content || "");
       svgObjects.push({
         id: `svg-icon-${idSuffix}`,
         pathData,
@@ -305,22 +313,38 @@ function hydrateSingleVisual(
       break;
 
     case "diagram":
-      // Draw a neat diagram layout: box outline with central label
-      objects.push({
-        id: `rect-diag-${idSuffix}`,
-        type: "rect",
-        x: x - 55,
-        y: y - 35,
-        width: 110,
-        height: 70,
-        fillColor: "transparent",
-        strokeColor: palette.accent,
-        lineWidth: palette.lineWidth,
-        startTime,
-        duration: drawDuration * 0.6,
-        animationType: "draw",
-        easing: "easeOut",
-      });
+      if (vis.customSvg) {
+        // Draw custom single-stroke diagram drawn by AI
+        svgObjects.push({
+          id: `svg-diag-${idSuffix}`,
+          pathData: vis.customSvg,
+          x: x - 35,
+          y: y - 40,
+          scaleX: 1.25,
+          scaleY: 1.25,
+          strokeColor: palette.accent,
+          strokeWidth: palette.lineWidth,
+          startTime,
+          duration: drawDuration,
+        });
+      } else {
+        // Draw a neat diagram layout: box outline with central label
+        objects.push({
+          id: `rect-diag-${idSuffix}`,
+          type: "rect",
+          x: x - 55,
+          y: y - 35,
+          width: 110,
+          height: 70,
+          fillColor: "transparent",
+          strokeColor: palette.accent,
+          lineWidth: palette.lineWidth,
+          startTime,
+          duration: drawDuration * 0.6,
+          animationType: "draw",
+          easing: "easeOut",
+        });
+      }
       objects.push({
         id: `text-diag-lbl-${idSuffix}`,
         type: "text",

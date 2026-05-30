@@ -25,19 +25,20 @@ const MIN_DURATION = 0.1;
 const PX_PER_SEC = 80;
 
 const COLORS = {
-  bg: "#0c1117",
-  surface: "#141920",
-  border: "rgba(99,102,241,0.18)",
-  accent: "#6366f1",
-  accentDim: "rgba(99,102,241,0.18)",
-  text: "#e2e8f0",
-  muted: "#64748b",
-  dimmer: "#1e2530",
-  animated: "#6366f1",
-  svg: "#10b981",
-  playhead: "#f43f5e",
-  hdrActive: "rgba(99,102,241,0.14)",
-  hdrIdle: "rgba(255,255,255,0.03)",
+  bg:        "#121214",
+  surface:   "#1a1a1e",
+  border:    "rgba(255,255,255,0.08)",
+  accent:    "#ffffff",
+  accentDim: "rgba(255,255,255,0.06)",
+  text:      "#f4f4f5",
+  muted:     "#8e8e93",
+  dimmer:    "#222226",
+  animated:  "#d4d4d8",         // Sleek zinc gray for animated text/shapes
+  svg:       "#34d399",         // Premium sage/emerald green for SVGs
+  audio:     "#c084fc",         // Soft lavender/purple for timeline audio tracks
+  playhead:  "#ef4444",         // Crisp red playhead
+  hdrActive: "rgba(255,255,255,0.04)",
+  hdrIdle:   "rgba(255,255,255,0.01)",
 };
 
 type AnyObj = (AnimatedObject & { _kind: "animated" }) | (SvgPathObject & { _kind: "svg" });
@@ -162,7 +163,7 @@ function ObjectBar({ obj, scene, pxPerSec, isSelected, height = TRACK_H - 6, onS
       }}
       onMouseDown={e => onMouseDown(e, "move")}
     >
-      <span style={{ fontSize: 9, color: "#fff", padding: "0 5px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", pointerEvents: "none", fontFamily: "monospace" }}>
+      <span style={{ fontSize: 9, color: "#000", padding: "0 5px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", pointerEvents: "none", fontFamily: "monospace" }}>
         {objLabel(obj)}
       </span>
       <div
@@ -471,6 +472,116 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
   const isActive = currentTime >= scene.startTime && currentTime < scene.startTime + scene.duration;
   const playheadX = Math.min(localTime * pxPerSec, totalW);
 
+  // ── Collapsible Grouping State & Logic ──
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const groups: Record<string, AnyObj[]> = {};
+  const ungrouped: AnyObj[] = [];
+
+  objects.forEach(obj => {
+    const groupId = (obj as any).groupId;
+    if (groupId) {
+      if (!groups[groupId]) groups[groupId] = [];
+      groups[groupId].push(obj);
+    } else {
+      ungrouped.push(obj);
+    }
+  });
+
+  const groupBounds = Object.keys(groups).reduce((acc, gId) => {
+    const items = groups[gId];
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    items.forEach(item => {
+      minStart = Math.min(minStart, item.startTime);
+      maxEnd = Math.max(maxEnd, item.startTime + item.duration);
+    });
+    
+    // Create a beautiful short name based on timestamp
+    let cleanName = "AI Sketch Group";
+    const firstObj = items[0];
+    if (firstObj && firstObj.id) {
+      const match = firstObj.id.match(/^svg-import-svg-group-(\d+)-/);
+      if (match) {
+        cleanName = `AI Sketch #${match[1].slice(-4)}`;
+      } else {
+        const localMatch = firstObj.id.match(/^svg-import-local-(\d+)-/);
+        if (localMatch) cleanName = `Imported Vector #${localMatch[1].slice(-4)}`;
+      }
+    }
+    
+    acc[gId] = {
+      startTime: minStart,
+      duration: Math.max(0.2, maxEnd - minStart),
+      name: cleanName,
+    };
+    return acc;
+  }, {} as Record<string, { startTime: number; duration: number; name: string }>);
+
+  const toggleGroup = (gId: string) => {
+    setCollapsedGroups(prev => ({
+      ...prev,
+      [gId]: !prev[gId],
+    }));
+  };
+
+  interface TimelineRow {
+    id: string;
+    type: "single" | "groupHeader" | "groupChild";
+    name: string;
+    groupId?: string;
+    obj?: AnyObj;
+    startTime: number;
+    duration: number;
+  }
+
+  const rows: TimelineRow[] = [];
+  const processedGroups = new Set<string>();
+
+  objects.forEach(obj => {
+    const gId = (obj as any).groupId;
+    if (!gId) {
+      rows.push({
+        id: obj.id,
+        type: "single",
+        name: objLabel(obj),
+        startTime: obj.startTime,
+        duration: obj.duration,
+        obj,
+      });
+    } else if (!processedGroups.has(gId)) {
+      processedGroups.add(gId);
+      const groupItems = groups[gId];
+      const bounds = groupBounds[gId];
+      const isGroupCollapsed = collapsedGroups[gId] !== false; // Default to collapsed!
+
+      // 1. Group Header Row
+      rows.push({
+        id: `group-hdr-${gId}`,
+        type: "groupHeader",
+        name: bounds.name,
+        groupId: gId,
+        startTime: bounds.startTime,
+        duration: bounds.duration,
+      });
+
+      // 2. Child Rows
+      if (!isGroupCollapsed) {
+        groupItems.forEach((item, idx) => {
+          rows.push({
+            id: item.id,
+            type: "groupChild",
+            name: `  ↳ Line Stroke ${idx + 1}`,
+            groupId: gId,
+            startTime: item.startTime,
+            duration: item.duration,
+            obj: item,
+          });
+        });
+      }
+    }
+  });
+
   const handleUpdate = (obj: AnyObj, startTime: number, duration: number) => {
     const newStart = Math.max(0, startTime);
     const newDur   = Math.max(MIN_DURATION, duration);
@@ -483,6 +594,39 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
     }
     if (obj._kind === "animated") {
       sceneStore.updateObject(scene.id, obj.id, { startTime: newStart, duration: newDur });
+    } else if (obj._kind === "svg") {
+      sceneStore.updateSvgObject(scene.id, obj.id, { startTime: newStart, duration: newDur });
+    }
+  };
+
+  const handleGroupUpdate = (gId: string, newStart: number, newDur: number) => {
+    const bounds = groupBounds[gId];
+    if (!bounds) return;
+    const deltaStart = newStart - bounds.startTime;
+    const scaleFactor = bounds.duration > 0 ? newDur / bounds.duration : 1;
+
+    groups[gId].forEach(item => {
+      const localStartOffset = item.startTime - bounds.startTime;
+      const nextItemStart = newStart + localStartOffset * scaleFactor;
+      const nextItemDur = item.duration * scaleFactor;
+
+      const nextStartClamped = Math.max(0, nextItemStart);
+      const nextDurClamped = Math.max(0.1, nextItemDur);
+
+      item.startTime = nextStartClamped;
+      item.duration = nextDurClamped;
+
+      if (item._kind === "animated") {
+        sceneStore.updateObject(scene.id, item.id, { startTime: nextStartClamped, duration: nextDurClamped });
+      } else if (item._kind === "svg") {
+        sceneStore.updateSvgObject(scene.id, item.id, { startTime: nextStartClamped, duration: nextDurClamped });
+      }
+    });
+
+    // Auto-extend scene if group clip goes past end
+    const clipEnd = newStart + newDur;
+    if (clipEnd > scene.duration) {
+      sceneStore.extendSceneDuration(scene.id, Math.round((clipEnd + 0.5) * 10) / 10);
     }
   };
 
@@ -554,17 +698,52 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
             onSelect={onSelectKf}
             onSeek={onSeek}
           />
-          {objects.map(obj => (
+          {rows.map(row => (
             <div
-              key={obj.id}
-              style={{ display: "flex", height: TRACK_H, alignItems: "center", borderBottom: `1px solid ${COLORS.border}11` }}
+              key={row.id}
+              style={{
+                display: "flex",
+                height: TRACK_H,
+                alignItems: "center",
+                borderBottom: `1px solid ${COLORS.border}11`,
+                background: row.type === "groupHeader" ? "rgba(255,255,255,0.015)" : "transparent",
+              }}
             >
               {/* Label */}
               <div
-                style={{ width: LABEL_W, flexShrink: 0, padding: "0 10px", fontSize: 9, color: selectedId === obj.id ? COLORS.accent : COLORS.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}
-                onClick={() => editorStore.select(obj.id, obj._kind)}
+                style={{
+                  width: LABEL_W,
+                  flexShrink: 0,
+                  padding: "0 10px",
+                  fontSize: 9,
+                  color: row.type === "groupHeader" ? (selectedId && groups[row.groupId!]?.some(item => item.id === selectedId) ? COLORS.accent : COLORS.muted) : selectedId === row.id ? COLORS.accent : COLORS.muted,
+                  fontWeight: row.type === "groupHeader" ? 600 : 400,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+                onClick={() => {
+                  if (row.type === "groupHeader" && row.groupId) {
+                    toggleGroup(row.groupId);
+                    const firstItem = groups[row.groupId]?.[0];
+                    if (firstItem) {
+                      editorStore.select(firstItem.id, firstItem._kind);
+                    }
+                  } else if (row.obj) {
+                    editorStore.select(row.obj.id, row.obj._kind);
+                  }
+                }}
               >
-                {objLabel(obj)}
+                {row.type === "groupHeader" && (
+                  <span style={{ fontSize: 7, color: COLORS.muted, marginRight: 2 }}>
+                    {collapsedGroups[row.groupId!] !== false ? "▶" : "▼"}
+                  </span>
+                )}
+                {row.name}
               </div>
 
               {/* Track area */}
@@ -575,19 +754,51 @@ function SceneSection({ scene, currentTime, selectedId, isCollapsed, onToggle, o
                   onSeek(scene.startTime + (e.clientX - rect.left) / pxPerSec);
                 }}
               >
-                <ObjectBar
-                  obj={obj}
-                  scene={scene}
-                  pxPerSec={pxPerSec}
-                  isSelected={selectedId === obj.id}
-                  onSelect={() => editorStore.select(obj.id, obj._kind)}
-                  onUpdate={(st, dur) => handleUpdate(obj, st, dur)}
-                />
+                {row.type === "groupHeader" ? (
+                  <ObjectBar
+                    obj={{
+                      id: row.id,
+                      groupId: row.groupId,
+                      pathData: "",
+                      x: 0, y: 0,
+                      strokeColor: "#38bdf8", // Sky blue for grouping highlight
+                      strokeWidth: 3,
+                      startTime: row.startTime,
+                      duration: row.duration,
+                      _kind: "svg" as const,
+                      drawMode: "stroke" as const,
+                    }}
+                    scene={scene}
+                    pxPerSec={pxPerSec}
+                    isSelected={selectedId && groups[row.groupId!]?.some(item => item.id === selectedId)}
+                    height={TRACK_H - 10}
+                    onSelect={() => {
+                      if (row.groupId) {
+                        const firstItem = groups[row.groupId]?.[0];
+                        if (firstItem) {
+                          editorStore.select(firstItem.id, firstItem._kind);
+                        }
+                      }
+                    }}
+                    onUpdate={(st, dur) => row.groupId && handleGroupUpdate(row.groupId, st, dur)}
+                  />
+                ) : (
+                  row.obj && (
+                    <ObjectBar
+                      obj={row.obj}
+                      scene={scene}
+                      pxPerSec={pxPerSec}
+                      isSelected={selectedId === row.obj.id}
+                      onSelect={() => row.obj && editorStore.select(row.obj.id, row.obj._kind)}
+                      onUpdate={(st, dur) => row.obj && handleUpdate(row.obj, st, dur)}
+                    />
+                  )
+                )}
               </div>
             </div>
           ))}
 
-          {objects.length === 0 && (
+          {rows.length === 0 && (
             <div style={{ display: "flex", height: TRACK_H }}>
               <div style={{ width: LABEL_W, flexShrink: 0 }} />
               <div style={{ flex: 1, display: "flex", alignItems: "center", padding: "0 10px" }}>
@@ -709,16 +920,37 @@ interface TimelinePanelProps {
 
 export function TimelinePanel({
   currentTime, totalDuration, isPlaying, exporting,
-  exportFormat, onScrub: _onScrub, onPlay, onReset, onExport, selectedId, onAddCameraKeyframe,
+  exportFormat, onScrub, onPlay, onReset, onExport, selectedId, onAddCameraKeyframe,
   selectedKfTime, setSelectedKfTime,
 }: TimelinePanelProps) {
   const [panelExpanded, setPanelExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const scrubberScrollRef = useRef<HTMLDivElement>(null);
   const scenes = sceneStore.getManager().scenes;
 
-  // Per-scene collapse state: Set of scene IDs that are collapsed
   const [collapsedScenes, setCollapsedScenes] = useState<Set<string>>(() => new Set());
+
+  const [panelHeight, setPanelHeight] = useState(160);
+  const isResizingPanelRef = useRef(false);
+
+  const startResizePanel = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingPanelRef.current = true;
+    
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!isResizingPanelRef.current) return;
+      const nextHeight = window.innerHeight - ev.clientY - 40;
+      setPanelHeight(Math.max(60, Math.min(500, nextHeight)));
+    };
+    
+    const onMouseUp = () => {
+      isResizingPanelRef.current = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, []);
 
   const [, forceUpdate] = useState(0);
   useEffect(() => {
@@ -759,6 +991,25 @@ export function TimelinePanel({
       display: "flex", flexDirection: "column",
       userSelect: "none",
     }}>
+      {/* Top Resize handle bar for vertical height resizing */}
+      <div
+        onMouseDown={startResizePanel}
+        style={{
+          height: 6,
+          cursor: "ns-resize",
+          background: "transparent",
+          position: "absolute",
+          top: -3,
+          left: 0,
+          right: 0,
+          zIndex: 1000,
+          transition: "background 0.15s",
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = COLORS.accent}
+        onMouseLeave={e => {
+          if (!isResizingPanelRef.current) e.currentTarget.style.background = "transparent";
+        }}
+      />
 
       {/* ── Top control bar ──────────────────────────────────────────── */}
       <div style={{
@@ -826,68 +1077,70 @@ export function TimelinePanel({
           {currentTime.toFixed(2)}s / {totalDuration}s
         </span>
 
-        {/* Scrubber — synced to track scroll */}
-        <div 
-          ref={scrubberScrollRef}
-          style={{ 
-            flex: 1, 
-            overflowX: "hidden",
-            position: "relative",
-          }}
-        >
-          <div
+        {/* Beautiful premium Timeline Slider */}
+        <div style={{ flex: 1, display: "flex", alignItems: "center", position: "relative" }}>
+          <style dangerouslySetInnerHTML={{ __html: `
+            .timeline-scrub-slider {
+              width: 100%;
+              -webkit-appearance: none;
+              appearance: none;
+              height: 6px;
+              border-radius: 3px;
+              outline: none;
+              cursor: pointer;
+              background: rgba(99, 102, 241, 0.18);
+              transition: background 0.15s ease-in-out;
+            }
+            .timeline-scrub-slider::-webkit-slider-runnable-track {
+              width: 100%;
+              height: 6px;
+              cursor: pointer;
+              background: transparent;
+              border-radius: 3px;
+            }
+            .timeline-scrub-slider::-webkit-slider-thumb {
+              height: 14px;
+              width: 14px;
+              border-radius: 50%;
+              background: #ffffff;
+              border: 2.5px solid #ffffff;
+              cursor: pointer;
+              -webkit-appearance: none;
+              margin-top: -4px;
+              box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+              transition: transform 0.1s ease, background-color 0.1s ease;
+            }
+            .timeline-scrub-slider::-webkit-slider-thumb:hover {
+              transform: scale(1.2);
+              background: #ffffff;
+            }
+            .timeline-scrub-slider::-moz-range-thumb {
+              height: 10px;
+              width: 10px;
+              border-radius: 50%;
+              background: #ffffff;
+              border: 2.5px solid #ffffff;
+              cursor: pointer;
+              box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+              transition: transform 0.1s ease, background-color 0.1s ease;
+            }
+            .timeline-scrub-slider::-moz-range-thumb:hover {
+              transform: scale(1.2);
+              background: #ffffff;
+            }
+          ` }} />
+          <input
+            type="range"
+            min={0}
+            max={totalDuration}
+            step={0.01}
+            value={currentTime}
+            onChange={onScrub}
+            className="timeline-scrub-slider"
             style={{
-              position: "absolute",
-              left: LABEL_W,
-              width: totalDuration * PX_PER_SEC,
-              top: "50%",
-              transform: "translateY(-50%)",
-              height: 4,
-              background: COLORS.accentDim,
-              borderRadius: 2,
-              cursor: "pointer",
+              background: `linear-gradient(to right, ${COLORS.accent} 0%, ${COLORS.accent} ${(currentTime / Math.max(0.1, totalDuration)) * 100}%, ${COLORS.border} ${(currentTime / Math.max(0.1, totalDuration)) * 100}%, ${COLORS.border} 100%)`
             }}
-            onClick={e => {
-              const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-              const ratio = (e.clientX - rect.left) / rect.width;
-              sceneStore.seek(ratio * totalDuration);
-            }}
-            onMouseDown={e => {
-              const el = e.currentTarget as HTMLDivElement;
-              const onMove = (ev: MouseEvent) => {
-                const rect = el.getBoundingClientRect();
-                const ratio = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-                sceneStore.seek(ratio * totalDuration);
-              };
-              const onUp = () => {
-                window.removeEventListener("mousemove", onMove);
-                window.removeEventListener("mouseup", onUp);
-              };
-              window.addEventListener("mousemove", onMove);
-              window.addEventListener("mouseup", onUp);
-            }}
-          >
-            {/* Fill */}
-            <div style={{
-              position: "absolute",
-              left: 0, top: 0, height: "100%",
-              width: `${(currentTime / totalDuration) * 100}%`,
-              background: COLORS.accent,
-              borderRadius: 2,
-              pointerEvents: "none",
-            }} />
-            {/* Thumb */}
-            <div style={{
-              position: "absolute",
-              top: "50%",
-              left: `${(currentTime / totalDuration) * 100}%`,
-              transform: "translate(-50%, -50%)",
-              width: 12, height: 12,
-              borderRadius: "50%",
-              background: COLORS.accent,
-              pointerEvents: "none",
-            }} />
-          </div>
+          />
         </div>
 
         {/* Scene pills */}
@@ -897,10 +1150,10 @@ export function TimelinePanel({
             return (
               <button key={s.id} onClick={() => sceneStore.seek(s.startTime)} style={{
                 padding: "2px 8px", borderRadius: 20, fontSize: 9,
-                fontFamily: "monospace", cursor: "pointer",
+                cursor: "pointer",
                 border: active ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.border}`,
                 background: active ? COLORS.accent : "transparent",
-                color: active ? "#fff" : COLORS.muted,
+                color: active ? "#000" : COLORS.muted,
               }}>
                 {s.name}
               </button>
@@ -930,12 +1183,7 @@ export function TimelinePanel({
         <div
           ref={scrollRef}
           data-timeline-scroll=""
-          onScroll={e => {
-            if (scrubberScrollRef.current) {
-              scrubberScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
-            }
-          }}
-          style={{ overflowX: "auto", overflowY: "auto", maxHeight: 240, position: "relative" }}
+          style={{ overflowX: "auto", overflowY: "auto", height: panelHeight, position: "relative" }}
         >
           {scenes.map(scene => (
             <SceneSection
@@ -950,6 +1198,197 @@ export function TimelinePanel({
               onSelectKf={handleSelectKf}
             />
           ))}
+
+          {/* Global Audio Tracks Section */}
+          {(() => {
+            const audioTracks = sceneStore.getManager().audioTracks ?? [];
+            if (audioTracks.length === 0) return null;
+
+            return (
+              <div style={{ borderTop: `1.5px dashed ${COLORS.border}`, background: "rgba(0,0,0,0.15)", display: "flex", flexDirection: "column" }}>
+                {audioTracks.map((track) => {
+                  const isSelected = selectedId === track.id;
+                  const trackLeft = track.startTime * PX_PER_SEC;
+                  const trackWidth = Math.max(8, track.duration * PX_PER_SEC);
+
+                  return (
+                    <div
+                      key={track.id}
+                      style={{
+                        display: "flex",
+                        height: 32,
+                        alignItems: "center",
+                        position: "relative",
+                        borderBottom: `1px solid ${COLORS.border}`,
+                      }}
+                    >
+                      {/* Left Column Label spacer */}
+                      <div
+                        style={{
+                          width: LABEL_W,
+                          flexShrink: 0,
+                          padding: "0 10px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          background: COLORS.dimmer,
+                          height: "100%",
+                          borderRight: `1px solid ${COLORS.border}`,
+                          zIndex: 5,
+                        }}
+                      >
+                        <span style={{ fontSize: 9, color: COLORS.audio, fontWeight: "bold", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          🔊 {track.name}
+                        </span>
+                      </div>
+
+                      {/* Right Timeline Area where the audio block is rendered */}
+                      <div style={{ position: "relative", height: "100%", width: totalDuration * PX_PER_SEC, flexShrink: 0 }}>
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: trackLeft,
+                            width: trackWidth,
+                            top: 4,
+                            bottom: 4,
+                            borderRadius: 4,
+                            background: isSelected ? "rgba(192, 132, 252, 0.25)" : "rgba(192, 132, 252, 0.12)",
+                            border: isSelected ? `1.5px solid ${COLORS.audio}` : "1px solid rgba(192, 132, 252, 0.35)",
+                            cursor: "grab",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "0 6px",
+                            boxSizing: "border-box",
+                            overflow: "hidden",
+                            userSelect: "none",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            editorStore.select(track.id, "audio");
+                          }}
+                          onMouseDown={(e) => {
+                            // Draggable logic for Audio Block start time
+                            e.stopPropagation();
+                            e.preventDefault();
+                            editorStore.select(track.id, "audio");
+
+                            const startX = e.clientX;
+                            const initialStart = track.startTime;
+
+                            const onMouseMove = (ev: MouseEvent) => {
+                              const dx = ev.clientX - startX;
+                              const dt = dx / PX_PER_SEC;
+                              const nextStart = Math.max(0, initialStart + dt);
+                              sceneStore.updateAudioTrack(track.id, { startTime: nextStart });
+                            };
+
+                            const onMouseUp = () => {
+                              window.removeEventListener("mousemove", onMouseMove);
+                              window.removeEventListener("mouseup", onMouseUp);
+                            };
+
+                            window.addEventListener("mousemove", onMouseMove);
+                            window.addEventListener("mouseup", onMouseUp);
+                          }}
+                        >
+                          {/* Left Trim Handle */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: 6,
+                              cursor: "ew-resize",
+                              background: "rgba(192, 132, 252, 0.25)",
+                            }}
+                            onMouseDown={(e) => {
+                              // Drag to crop/trim start
+                              e.stopPropagation();
+                              e.preventDefault();
+                              const startX = e.clientX;
+                              const initialStart = track.startTime;
+                              const initialDuration = track.duration;
+
+                              const onMouseMove = (ev: MouseEvent) => {
+                                const dx = ev.clientX - startX;
+                                const dt = dx / PX_PER_SEC;
+                                const nextStart = Math.max(0, initialStart + dt);
+                                const nextDuration = Math.max(0.1, initialDuration - (nextStart - initialStart));
+                                sceneStore.updateAudioTrack(track.id, {
+                                  startTime: nextStart,
+                                  duration: nextDuration,
+                                });
+                              };
+
+                              const onMouseUp = () => {
+                                window.removeEventListener("mousemove", onMouseMove);
+                                window.removeEventListener("mouseup", onMouseUp);
+                              };
+
+                              window.addEventListener("mousemove", onMouseMove);
+                              window.addEventListener("mouseup", onMouseUp);
+                            }}
+                          />
+
+                          {/* Waveform Lines Representation */}
+                          <div style={{ display: "flex", gap: 2, alignItems: "center", flex: 1, opacity: 0.5, pointerEvents: "none", margin: "0 8px" }}>
+                            <div style={{ height: 6, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 12, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 8, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 14, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 10, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 16, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 8, width: 1.5, background: COLORS.audio }} />
+                            <div style={{ height: 12, width: 1.5, background: COLORS.audio }} />
+                          </div>
+
+                          <span style={{ fontSize: 8, color: "#000", fontWeight: 500, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", pointerEvents: "none" }}>
+                            {track.name} ({track.duration.toFixed(1)}s)
+                          </span>
+
+                          {/* Right Trim Handle */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              right: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: 6,
+                              cursor: "ew-resize",
+                              background: "rgba(192, 132, 252, 0.25)",
+                            }}
+                            onMouseDown={(e) => {
+                              // Drag to crop/trim duration
+                              e.stopPropagation();
+                              e.preventDefault();
+                              const startX = e.clientX;
+                              const initialDuration = track.duration;
+
+                              const onMouseMove = (ev: MouseEvent) => {
+                                const dx = ev.clientX - startX;
+                                const dt = dx / PX_PER_SEC;
+                                const nextDuration = Math.max(0.1, initialDuration + dt);
+                                sceneStore.updateAudioTrack(track.id, { duration: nextDuration });
+                              };
+
+                              const onMouseUp = () => {
+                                window.removeEventListener("mousemove", onMouseMove);
+                                window.removeEventListener("mouseup", onMouseUp);
+                              };
+
+                              window.addEventListener("mousemove", onMouseMove);
+                              window.addEventListener("mouseup", onMouseUp);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -963,7 +1402,7 @@ function ctrlBtn(primary = false): React.CSSProperties {
     padding: "3px 10px", borderRadius: 6, fontSize: 10,
     fontFamily: "monospace", cursor: "pointer", border: "none",
     background: primary ? COLORS.accent : COLORS.accentDim,
-    color: primary ? "#fff" : COLORS.muted,
+    color: primary ? "#000" : COLORS.muted,
   };
 }
 

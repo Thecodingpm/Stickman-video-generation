@@ -1,9 +1,8 @@
 /**
- * AssetLibrary — SVG shapes, premium illustrations, online icon search, uploads, and hand styles.
- * Highly polished, premium glassmorphism tabbed design for a streamlined user experience.
+ * AssetLibrary — Unified library panel: search, upload, drag-and-drop, save to DB, hand styles.
  */
 
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback, DragEvent } from "react";
 import { sceneStore } from "../store/sceneStore";
 import { editorStore } from "../store/editorStore";
 import { SVG_SHAPES } from "../core/svgShapes";
@@ -13,22 +12,80 @@ import { fetchCloudSvgs, uploadSvgToCloud, deleteSvgFromCloud, isCloudConfigured
 import type { CloudSvgAsset } from "../core/firebase";
 import { HandCalibrator } from "./HandCalibrator";
 
-const COLORS = {
-  bg:        "#0c1117",
-  surface:   "#141920",
-  border:    "rgba(99,102,241,0.18)",
-  accent:    "#6366f1",
-  accentDim: "rgba(99,102,241,0.12)",
-  text:      "#e2e8f0",
-  muted:     "#64748b",
-  dimmer:    "#1e2530",
-  green:     "#10b981",
-  yellow:    "#f59e0b",
+// ─── Design Tokens ─────────────────────────────────────────────────────────────
+const C = {
+  bg:        "#121214",
+  surface:   "#1a1a1e",
+  surfaceHi: "#222226",          // Darker card background
+  border:    "rgba(255,255,255,0.08)",
+  borderHi:  "rgba(255,255,255,0.15)",
+  accent:    "#ffffff",
+  accentDim: "rgba(255,255,255,0.06)",
+  text:      "#f4f4f5",
+  textMuted: "#8e8e93",
+  dimmer:    "#16161a",
+  green:     "#34d399",
+  greenDim:  "rgba(52,211,153,0.1)",
+  yellow:    "#fbbf24",
   red:       "#ef4444",
+  redDim:    "rgba(239,68,68,0.1)",
 };
 
-// Shape preview helper
-function ShapePreview({ pathData, stroke = COLORS.accent }: { pathData: string; stroke?: string }) {
+// ─── SVG Icon Components ───────────────────────────────────────────────────────
+const SearchIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+);
+const UploadIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+    <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+  </svg>
+);
+const TrashIcon = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+    <path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+  </svg>
+);
+const SaveIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+    <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+  </svg>
+);
+const CloudIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+  </svg>
+);
+const HandIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+    <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+  </svg>
+);
+const LibraryIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+    <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+  </svg>
+);
+const StylusIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
+    <path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/>
+  </svg>
+);
+const XIcon = () => (
+  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+  </svg>
+);
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function ShapePreview({ pathData, stroke = C.accent }: { pathData: string; stroke?: string }) {
   return (
     <svg viewBox="-10 -10 120 120" width="100%" height="100%" style={{ display: "block" }}>
       <path d={pathData} fill="none" stroke={stroke} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
@@ -36,6 +93,111 @@ function ShapePreview({ pathData, stroke = COLORS.accent }: { pathData: string; 
   );
 }
 
+function SvgPreview({ src }: { src: string }) {
+  return (
+    <img
+      src={src}
+      alt=""
+      style={{
+        width: "100%", height: "100%", objectFit: "contain",
+        filter: "invert(65%) sepia(21%) saturate(1450%) hue-rotate(215deg) brightness(98%) contrast(92%)"
+      }}
+    />
+  );
+}
+
+// ─── Search Helpers ────────────────────────────────────────────────────────────
+function fuzzyScore(query: string, text: string): number {
+  const q = query.trim().toLowerCase();
+  const t = text.trim().toLowerCase();
+  if (!q) return 1;
+
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return 1;
+
+  let totalScore = 0;
+  for (const word of words) {
+    let wordScore = 0;
+    if (t === word) {
+      wordScore = 100;
+    } else if (t.startsWith(word)) {
+      wordScore = 80 - (t.length - word.length);
+    } else if (t.includes(word)) {
+      wordScore = 60 - t.indexOf(word);
+    } else {
+      // fuzzy character sequence matching for the word
+      let qi = 0;
+      let lastMatchIdx = -1;
+      let totalGap = 0;
+      for (let ti = 0; ti < t.length && qi < word.length; ti++) {
+        if (t[ti] === word[qi]) {
+          if (lastMatchIdx !== -1) {
+            totalGap += (ti - lastMatchIdx - 1);
+          }
+          lastMatchIdx = ti;
+          qi++;
+        }
+      }
+      if (qi === word.length) {
+        const gapPenalty = Math.min(15, totalGap);
+        const lengthPenalty = Math.min(10, t.length - word.length);
+        wordScore = 30 - gapPenalty - lengthPenalty;
+      }
+    }
+    if (wordScore <= 0) return 0; // all words must match at least somewhat
+    totalScore += wordScore;
+  }
+  return totalScore / words.length;
+}
+
+function renderHighlightedText(text: string, query: string, accentColor: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return <span style={{ textTransform: "capitalize" }}>{text}</span>;
+
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return <span style={{ textTransform: "capitalize" }}>{text}</span>;
+
+  const tLower = text.toLowerCase();
+  const matchedIndices = new Set<number>();
+
+  for (const word of words) {
+    const subIdx = tLower.indexOf(word);
+    if (subIdx !== -1) {
+      for (let i = 0; i < word.length; i++) {
+        matchedIndices.add(subIdx + i);
+      }
+    } else {
+      let qi = 0;
+      for (let ti = 0; ti < tLower.length && qi < word.length; ti++) {
+        if (tLower[ti] === word[qi]) {
+          matchedIndices.add(ti);
+          qi++;
+        }
+      }
+    }
+  }
+
+  return (
+    <span style={{ textTransform: "capitalize" }}>
+      {text.split("").map((char, idx) => {
+        const isHighlighted = matchedIndices.has(idx);
+        return (
+          <span
+            key={idx}
+            style={{
+              color: isHighlighted ? accentColor : "inherit",
+              fontWeight: isHighlighted ? "700" : "inherit",
+            }}
+          >
+            {char}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 const HAND_STYLES = [
   { id: "hand1", src: "/handimg1.png",  label: "Hand 1" },
   { id: "hand2", src: "/handimg2.png",  label: "Hand 2" },
@@ -45,411 +207,102 @@ const HAND_STYLES = [
   { id: "hand6", src: "/style4.png",    label: "Hand 6" },
 ];
 
-const PREMIUM_ILLUSTRATIONS = {
-  character: [
-    "M 50 20 C 35 20 30 30 30 45 C 30 65 40 75 50 75 C 60 75 70 65 70 45 C 70 30 65 20 50 20 Z",
-    "M 30 45 C 15 50 10 70 15 90 L 85 90 C 90 70 85 50 70 45",
-    "M 42 42 A 2 2 0 1 1 42 46",
-    "M 58 42 A 2 2 0 1 1 58 46",
-    "M 45 58 Q 50 64 55 58",
-    "M 50 -10 C 45 -10 40 -6 40 -1 C 40 2 43 5 46 6 L 46 9 L 54 9 L 54 6 C 57 5 60 2 60 -1 C 60 -6 55 -10 50 -10 Z",
-    "M 45 10 L 55 10",
-    "M 35 -15 L 38 -12 M 65 -15 L 62 -12 M 50 -20 L 50 -16"
-  ].join(" "),
+// Shape "library" entries from built-in shapes
+const SHAPE_ENTRIES = (Object.keys(SVG_SHAPES) as ShapeName[]).map(n => ({
+  id: `shape:${n}`,
+  name: n,
+  pathData: SVG_SHAPES[n],
+  type: "shape" as const,
+}));
 
-  rocket: [
-    "M 50 5 C 45 25 35 45 35 65 C 35 78 42 85 50 85 C 58 85 66 78 66 65 C 66 45 55 25 50 5 Z",
-    "M 50 30 A 8 8 0 1 1 50 46 A 8 8 0 1 1 50 30 Z",
-    "M 35 60 C 25 65 15 75 20 85 C 26 88 35 80 35 80 Z",
-    "M 66 60 C 76 65 86 75 81 85 C 75 88 66 80 66 80 Z",
-    "M 45 88 Q 50 105 55 88"
-  ].join(" "),
+// ─── Types ────────────────────────────────────────────────────────────────────
+type LibraryTab = "library" | "hands";
 
-  trophy: [
-    "M 30 15 L 70 15 C 70 45 30 45 30 15 Z",
-    "M 50 45 L 50 75",
-    "M 35 75 L 65 75",
-    "M 30 20 C 15 20 15 35 30 35",
-    "M 70 20 C 85 20 85 35 70 35",
-    "M 50 22 L 53 28 L 60 28 L 55 32 L 57 38 L 50 34 L 43 38 L 45 32 L 40 28 L 47 28 Z"
-  ].join(" "),
+interface LocalAsset {
+  id: string;
+  name: string;
+  pathData?: string;
+  svgUrl?: string;       // object URL for raster images
+  type: "shape" | "svg" | "image" | "cloud" | "icon";
+  isCustom?: boolean;
+  cloudId?: string;      // if already saved to cloud
+  pendingSave?: boolean; // show "save to DB" prompt
+  svgText?: string;      // raw SVG text for cloud save
+}
 
-  laptop: [
-    "M 15 15 L 85 15 L 85 65 L 15 65 Z",
-    "M 5 65 L 95 65 L 90 78 L 10 78 Z",
-    "M 44 70 L 56 70 L 56 75 L 44 75 Z",
-    "M 25 35 L 35 30 L 25 25 M 75 25 L 65 30 L 75 35"
-  ].join(" "),
-
-  analytics: [
-    "M 10 10 L 90 10 L 90 60 L 10 60 Z",
-    "M 50 60 L 50 85",
-    "M 30 85 L 70 85",
-    "M 20 50 L 30 50 L 30 35 L 20 35 Z",
-    "M 40 50 L 50 50 L 50 25 L 40 25 Z",
-    "M 60 50 L 70 50 L 70 15 L 60 15 Z",
-    "M 15 52 L 25 40 L 45 30 L 65 18 L 85 18"
-  ].join(" "),
-
-  globe: [
-    "M 50 10 A 40 40 0 1 1 50 90 A 40 40 0 1 1 50 10 Z",
-    "M 10 50 L 90 50",
-    "M 16 30 Q 50 40 84 30",
-    "M 16 70 Q 50 60 84 70",
-    "M 50 10 Q 30 50 50 90",
-    "M 50 10 Q 70 50 50 90"
-  ].join(" ")
+// ── Path converters (Exported for drag and drop parsing in Editor) ───────────
+export const _circleToPath = (el: Element): string | null => {
+  const cx = parseFloat(el.getAttribute("cx") ?? "0");
+  const cy = parseFloat(el.getAttribute("cy") ?? "0");
+  const r  = parseFloat(el.getAttribute("r")  ?? "0");
+  if (r <= 0) return null;
+  return `M ${cx - r} ${cy} a ${r} ${r} 0 1 0 ${r * 2} 0 a ${r} ${r} 0 1 0 ${-r * 2} 0`;
+};
+export const _ellipseToPath = (el: Element): string | null => {
+  const cx = parseFloat(el.getAttribute("cx") ?? "0");
+  const cy = parseFloat(el.getAttribute("cy") ?? "0");
+  const rx = parseFloat(el.getAttribute("rx") ?? "0");
+  const ry = parseFloat(el.getAttribute("ry") ?? "0");
+  if (rx <= 0 || ry <= 0) return null;
+  return `M ${cx - rx} ${cy} a ${rx} ${ry} 0 1 0 ${rx * 2} 0 a ${rx} ${ry} 0 1 0 ${-rx * 2} 0`;
+};
+export const _rectToPath = (el: Element): string | null => {
+  const x  = parseFloat(el.getAttribute("x")      ?? "0");
+  const y  = parseFloat(el.getAttribute("y")      ?? "0");
+  const w  = parseFloat(el.getAttribute("width")  ?? "0");
+  const h  = parseFloat(el.getAttribute("height") ?? "0");
+  let   rx = parseFloat(el.getAttribute("rx")     ?? "0");
+  let   ry = parseFloat(el.getAttribute("ry")     ?? "0");
+  if (w <= 0 || h <= 0) return null;
+  rx = Math.min(rx, w / 2);
+  ry = Math.min(ry || rx, h / 2);
+  rx = rx || ry;
+  if (rx > 0 && ry > 0) {
+    return `M ${x + rx} ${y} L ${x + w - rx} ${y} A ${rx} ${ry} 0 0 1 ${x + w} ${y + ry} L ${x + w} ${y + h - ry} A ${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h} L ${x + rx} ${y + h} A ${rx} ${ry} 0 0 1 ${x} ${y + h - ry} L ${x} ${y + ry} A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`;
+  }
+  return `M ${x} ${y} L ${x + w} ${y} L ${x + w} ${y + h} L ${x} ${y + h} Z`;
+};
+export const _lineToPath  = (el: Element): string | null => {
+  const x1 = el.getAttribute("x1") ?? "0";
+  const y1 = el.getAttribute("y1") ?? "0";
+  const x2 = el.getAttribute("x2") ?? "0";
+  const y2 = el.getAttribute("y2") ?? "0";
+  return `M ${x1} ${y1} L ${x2} ${y2}`;
+};
+export const _polyToPath  = (el: Element, close: boolean): string | null => {
+  const raw = el.getAttribute("points")?.trim();
+  if (!raw) return null;
+  const nums = raw.split(/[\s,]+/).map(Number);
+  if (nums.length < 4) return null;
+  let d = `M ${nums[0]} ${nums[1]}`;
+  for (let i = 2; i < nums.length; i += 2) d += ` L ${nums[i]} ${nums[i + 1]}`;
+  if (close) d += " Z";
+  return d;
+};
+export const _elementToPathData = (el: Element): string | null => {
+  switch (el.tagName.toLowerCase()) {
+    case "path":     return el.getAttribute("d") || null;
+    case "circle":   return _circleToPath(el);
+    case "ellipse":  return _ellipseToPath(el);
+    case "rect":     return _rectToPath(el);
+    case "line":     return _lineToPath(el);
+    case "polygon":  return _polyToPath(el, true);
+    case "polyline": return _polyToPath(el, false);
+    default:         return null;
+  }
+};
+export const _resolveAttr = (el: Element, attr: string): string | null => {
+  let node: Element | null = el;
+  while (node) {
+    const val = node.getAttribute(attr) || (node as HTMLElement).style?.[attr as any];
+    if (val && val !== "inherit") return val as string;
+    node = node.parentElement;
+  }
+  return null;
 };
 
-interface CloudDatabasePanelProps {
-  COLORS: any;
-  insertShape: (pathData: string, name: string, subPaths?: string[]) => void;
-}
 
-function CloudDatabasePanel({ COLORS, insertShape }: CloudDatabasePanelProps) {
-  const [assets, setAssets] = useState<CloudSvgAsset[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isAdding, setIsAdding] = useState(false);
-  const [uploading, setUploading] = useState(false);
-
-  // Form states
-  const [newName, setNewName] = useState("");
-  const [newPath, setNewPath] = useState("");
-  const [newTags, setNewTags] = useState("");
-
-  const isConfigured = isCloudConfigured();
-
-  // Load assets from database on mount
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      setLoading(true);
-      try {
-        const list = await fetchCloudSvgs();
-        if (active) setAssets(list);
-      } catch (err) {
-        console.error("Failed to load cloud assets:", err);
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    load();
-    return () => { active = false; };
-  }, []);
-
-  const handleSaveToCloud = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newName.trim() || !newPath.trim()) {
-      alert("Please provide both a name and valid SVG path data.");
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const segments = newPath.split(/(?=[Mm])/).filter(s => s.trim());
-      const subPaths = segments.length > 1 ? segments : undefined;
-
-      const created = await uploadSvgToCloud({
-        name: newName.trim(),
-        pathData: newPath.trim(),
-        strokeColor: "#1e293b",
-        strokeWidth: 3,
-        fillColor: "transparent",
-        subPaths,
-        tags: newTags.split(",").map(t => t.trim()).filter(Boolean),
-        isCustom: true
-      });
-
-      setAssets(prev => [...prev, created]);
-      setNewName("");
-      setNewPath("");
-      setNewTags("");
-      setIsAdding(false);
-    } catch (err) {
-      console.error("Failed to publish SVG to cloud:", err);
-      alert("Failed to upload to the database. Running locally?");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to delete "${name}" from the database?`)) return;
-    try {
-      await deleteSvgFromCloud(id);
-      setAssets(prev => prev.filter(a => a.id !== id));
-    } catch (err) {
-      console.error("Failed to delete cloud asset:", err);
-      alert("Failed to delete asset from the database.");
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {/* ── Status Badge ── */}
-      <div 
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "6px 8px",
-          borderRadius: 6,
-          background: isConfigured ? "rgba(99,102,241,0.08)" : "rgba(245,158,11,0.06)",
-          border: `1px solid ${isConfigured ? "rgba(99,102,241,0.18)" : "rgba(245,158,11,0.15)"}`,
-          fontSize: 8,
-          fontWeight: "bold",
-          fontFamily: "monospace",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ color: isConfigured ? COLORS.accent : COLORS.yellow }}>●</span>
-          <span style={{ color: COLORS.text, fontSize: 8 }}>
-            {isConfigured ? "Firebase Cloud Connected" : "Local Offline Database Mode"}
-          </span>
-        </div>
-        {!isConfigured && (
-          <span 
-            title="Add VITE_FIREBASE_PROJECT_ID and VITE_FIREBASE_API_KEY environment variables to connect Firestore"
-            style={{ color: COLORS.muted, cursor: "help", borderBottom: `1px dotted ${COLORS.muted}` }}
-          >
-            Config Guide
-          </span>
-        )}
-      </div>
-
-      {/* ── Action Bar ── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-          Cloud SVG Assets ({assets.length})
-        </div>
-        <button
-          onClick={() => setIsAdding(prev => !prev)}
-          style={{
-            padding: "3px 8px",
-            borderRadius: 4,
-            background: isAdding ? COLORS.surface : COLORS.accent,
-            color: "#ffffff",
-            border: `1px solid ${isAdding ? COLORS.border : "transparent"}`,
-            cursor: "pointer",
-            fontSize: 8,
-            fontWeight: "bold",
-            display: "flex",
-            alignItems: "center",
-            gap: 2,
-            transition: "all 0.15s"
-          }}
-        >
-          {isAdding ? "✕ Cancel" : "➕ Add Custom"}
-        </button>
-      </div>
-
-      {/* ── Add Custom SVG Form ── */}
-      {isAdding && (
-        <form 
-          onSubmit={handleSaveToCloud}
-          style={{
-            padding: 8,
-            borderRadius: 6,
-            background: COLORS.surface,
-            border: `1px solid ${COLORS.border}`,
-            display: "flex",
-            flexDirection: "column",
-            gap: 6
-          }}
-        >
-          <div style={{ fontSize: 8, color: COLORS.text, fontWeight: "bold" }}>Save Vector Shape to Cloud</div>
-          
-          <input
-            type="text"
-            required
-            placeholder="Asset Name (e.g. Spiral Arrow)"
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            style={{
-              padding: "4px 6px",
-              borderRadius: 4,
-              border: `1px solid ${COLORS.border}`,
-              background: COLORS.dimmer,
-              color: COLORS.text,
-              fontSize: 9,
-              outline: "none"
-            }}
-          />
-
-          <textarea
-            required
-            placeholder="SVG Path d-data (e.g. M 10 10 L 90 90)"
-            rows={3}
-            value={newPath}
-            onChange={e => setNewPath(e.target.value)}
-            style={{
-              padding: "4px 6px",
-              borderRadius: 4,
-              border: `1px solid ${COLORS.border}`,
-              background: COLORS.dimmer,
-              color: COLORS.text,
-              fontSize: 8,
-              outline: "none",
-              fontFamily: "monospace",
-              resize: "vertical"
-            }}
-          />
-
-          <input
-            type="text"
-            placeholder="Tags comma separated (e.g. arrow, spiral)"
-            value={newTags}
-            onChange={e => setNewTags(e.target.value)}
-            style={{
-              padding: "4px 6px",
-              borderRadius: 4,
-              border: `1px solid ${COLORS.border}`,
-              background: COLORS.dimmer,
-              color: COLORS.text,
-              fontSize: 9,
-              outline: "none"
-            }}
-          />
-
-          <button
-            type="submit"
-            disabled={uploading}
-            style={{
-              width: "100%",
-              padding: "5px 0",
-              borderRadius: 4,
-              background: COLORS.green,
-              color: "#ffffff",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 9,
-              fontWeight: "bold"
-            }}
-          >
-            {uploading ? "Uploading..." : "💾 Save to Database"}
-          </button>
-        </form>
-      )}
-
-      {/* ── Assets Display ── */}
-      {loading ? (
-        <div style={{ padding: "40px 0", textAlign: "center", color: COLORS.muted, fontSize: 10 }}>
-          <span className="animate-pulse">Loading Cloud database...</span>
-        </div>
-      ) : assets.length === 0 ? (
-        <div style={{ padding: "40px 0", textAlign: "center", color: COLORS.muted, fontSize: 9, border: `1.5px dashed ${COLORS.border}`, borderRadius: 6 }}>
-          No vector assets in cloud yet. Click "Add Custom" to create one.
-        </div>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
-          {assets.map(asset => (
-            <div
-              key={asset.id}
-              style={{
-                position: "relative",
-                aspectRatio: "1",
-                borderRadius: 6,
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.surface,
-                padding: 6,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 4,
-                boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
-                transition: "all 0.15s",
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.borderColor = COLORS.accent;
-                e.currentTarget.style.background = COLORS.accentDim;
-                e.currentTarget.style.transform = "scale(1.03)";
-                const btn = e.currentTarget.querySelector(".del-btn") as HTMLElement;
-                if (btn) btn.style.opacity = "1";
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.borderColor = COLORS.border;
-                e.currentTarget.style.background = COLORS.surface;
-                e.currentTarget.style.transform = "scale(1)";
-                const btn = e.currentTarget.querySelector(".del-btn") as HTMLElement;
-                if (btn) btn.style.opacity = "0";
-              }}
-            >
-              {/* Delete Button */}
-              {(asset.isCustom || !asset.id.startsWith("seeded-")) && (
-                <button
-                  className="del-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(asset.id, asset.name);
-                  }}
-                  style={{
-                    position: "absolute",
-                    top: 2,
-                    right: 2,
-                    width: 14,
-                    height: 14,
-                    borderRadius: "50%",
-                    background: COLORS.red,
-                    color: "#ffffff",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: 8,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: 0,
-                    transition: "opacity 0.15s",
-                    zIndex: 2,
-                  }}
-                  title="Delete from database"
-                >
-                  ✕
-                </button>
-              )}
-
-              {/* Click-to-insert Area */}
-              <button
-                onClick={() => insertShape(asset.pathData, asset.name, asset.subPaths)}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  border: "none",
-                  background: "transparent",
-                  cursor: "pointer",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  padding: 0,
-                  margin: 0,
-                }}
-              >
-                <div style={{ width: "90%", flex: 1 }}>
-                  <ShapePreview pathData={asset.pathData} stroke={COLORS.accent} />
-                </div>
-                <span 
-                  style={{ 
-                    fontSize: 7, 
-                    color: COLORS.muted, 
-                    textTransform: "capitalize", 
-                    overflow: "hidden", 
-                    textOverflow: "ellipsis", 
-                    whiteSpace: "nowrap", 
-                    width: "100%",
-                    textAlign: "center"
-                  }}
-                  title={asset.name}
-                >
-                  {asset.name}
-                </span>
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
+// ─── Main Component ───────────────────────────────────────────────────────────
 interface AssetLibraryProps {
   onHandChange:       (src: string) => void;
   currentHand:        string;
@@ -457,207 +310,183 @@ interface AssetLibraryProps {
 }
 
 export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: AssetLibraryProps) {
-  const fileRef = useRef<HTMLInputElement>(null);
+  const fileRef    = useRef<HTMLInputElement>(null);
   const svgFileRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  const [activeTab, setActiveTab] = useState<"search" | "illustrations" | "shapes" | "hands" | "upload" | "cloud">("illustrations");
+  const [activeTab, setActiveTab] = useState<LibraryTab>("library");
   const [isCalibratorOpen, setIsCalibratorOpen] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [dropdownQuery, setDropdownQuery] = useState("");
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Search State
-  const [searchQuery, setSearchQuery] = useState("");
+  // Search
+  const [searchQuery, setSearchQuery]     = useState("");
   const [loadingSearch, setLoadingSearch] = useState(false);
-  const [iconsList, setIconsList] = useState<{ rawName: string; name: string; url: string }[]>([]);
-  const [importingIcon, setImportingIcon] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<{ rawName: string; name: string; url: string }[]>([]);
 
+  // Local library: cloud + shapes + recently added
+  const [cloudAssets, setCloudAssets]     = useState<CloudSvgAsset[]>([]);
+  const [loadingCloud, setLoadingCloud]   = useState(true);
+  const [localAssets, setLocalAssets]     = useState<LocalAsset[]>(() => {
+    try {
+      const saved = localStorage.getItem("scribe_flow_recent_assets");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("scribe_flow_recent_assets", JSON.stringify(localAssets));
+    } catch {
+      // ignore
+    }
+  }, [localAssets]);
+
+  // Upload state
+  const [isDragOver, setIsDragOver]       = useState(false);
+  const [savingToCloud, setSavingToCloud] = useState<string | null>(null);
+  const [importingIcon, setImportingIcon] = useState<string | null>(null);
+  const [pastedSvgCode, setPastedSvgCode] = useState("");
+  const [showPasteBox, setShowPasteBox]   = useState(false);
+  const [showShapesLibrary, setShowShapesLibrary] = useState(true);
+  const [showDbLibrary, setShowDbLibrary] = useState(true);
+
+  // Math LaTeX state
+  const [latexInput, setLatexInput] = useState("");
+  const [latexPreviewUrl, setLatexPreviewUrl] = useState("");
+  const [loadingFormula, setLoadingFormula] = useState(false);
+
+  // ── Scene helpers ──────────────────────────────────────────────────────────
   const getInsertScene = () =>
     sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
-
   const getLocalTime = () => sceneStore.getLocalTime();
 
-  // Insert SVG shape
-  const insertShape = (name: ShapeName) => {
+  // ── Sync localAssets on storage updates (for canvas drag-and-drop addition notifications) ──
+  useEffect(() => {
+    const handleStorageChange = () => {
+      try {
+        const saved = localStorage.getItem("scribe_flow_recent_assets");
+        if (saved) setLocalAssets(JSON.parse(saved));
+      } catch {}
+    };
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("scribe_recent_assets_update", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("scribe_recent_assets_update", handleStorageChange);
+    };
+  }, []);
+
+  // ── Insert helpers ─────────────────────────────────────────────────────────
+  const insertSvgPath = useCallback((pathData: string, name: string, subPaths?: string[]) => {
     const scene = getInsertScene();
     if (!scene) return;
     const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
-    const id = `svg-${name}-${Date.now()}`;
-    const pathData = SVG_SHAPES[name];
-    const subPaths = splitCompoundPath(pathData);
-    const hasSubPaths = subPaths.length > 1;
-
+    const id = `svg-lib-${Date.now()}`;
     sceneStore.addSvgObject(scene.id, {
       id,
       pathData,
-      subPaths:    hasSubPaths ? subPaths : undefined,
-      x: center.x - 75,
-      y: center.y - 75,
+      subPaths,
+      x: center.x - 75, y: center.y - 75,
       scaleX: 1.5, scaleY: 1.5,
       strokeColor: "#1e293b",
       strokeWidth: 3,
-      fillColor:   "transparent",
-      startTime:   getLocalTime(),
-      duration:    getPathDrawDuration(pathData),
-      easing:      SvgEasing.easeInOut,
+      fillColor: "transparent",
+      startTime: getLocalTime(),
+      duration: getPathDrawDuration(pathData),
+      easing: SvgEasing.easeInOut,
     });
     editorStore.select(id, "svg");
     editorStore.setMode("select");
-  };
+  }, [getViewportCenter]);
 
-  // Insert Premium Whiteboard Illustration
-  const insertPremiumIllustration = (name: keyof typeof PREMIUM_ILLUSTRATIONS) => {
-    const scene = getInsertScene();
-    if (!scene) return;
-    const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
-    const id = `svg-premium-${name}-${Date.now()}`;
-    const pathData = PREMIUM_ILLUSTRATIONS[name];
+  const insertShape = useCallback((name: ShapeName) => {
+    const pathData = SVG_SHAPES[name];
     const subPaths = splitCompoundPath(pathData);
-    const hasSubPaths = subPaths.length > 1;
+    insertSvgPath(pathData, name, subPaths.length > 1 ? subPaths : undefined);
 
-    sceneStore.addSvgObject(scene.id, {
-      id,
-      pathData,
-      subPaths:    hasSubPaths ? subPaths : undefined,
-      x: center.x - 100,
-      y: center.y - 100,
-      scaleX: 2.0, scaleY: 2.0,
-      strokeColor: "#1e293b",
-      strokeWidth: 3,
-      fillColor:   "transparent",
-      startTime:   getLocalTime(),
-      duration:    getPathDrawDuration(pathData),
-      easing:      SvgEasing.easeInOutCubic,
+    const assetId = `seeded-${name}`;
+    setLocalAssets(prev => {
+      const filtered = prev.filter(x => x.id !== assetId);
+      return [
+        {
+          id: assetId,
+          name: name.replace(/-/g, " "),
+          pathData,
+          type: "shape",
+        },
+        ...filtered,
+      ].slice(0, 12);
     });
-    editorStore.select(id, "svg");
-    editorStore.setMode("select");
-  };
+  }, [insertSvgPath]);
 
-  // Insert Image
-  const insertImage = (file: File) => {
+  const insertImage = useCallback((file: File) => {
     const scene = getInsertScene();
     if (!scene) return;
     const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
     const url = URL.createObjectURL(file);
     const id  = `img-${Date.now()}`;
     sceneStore.addObject(scene.id, {
-      id,
-      type:          "image" as any,
-      x:             center.x - 80,
-      y:             center.y - 60,
-      width:         160, height: 120,
-      src:           url,
-      fillColor:     "transparent",
-      startTime:     getLocalTime(),
-      duration:      1.5,
-      animationType: "fade",
-      easing:        "easeOut",
+      id, type: "image" as any,
+      x: center.x - 80, y: center.y - 60,
+      width: 160, height: 120,
+      src: url, fillColor: "transparent",
+      startTime: getLocalTime(), duration: 1.5,
+      animationType: "fade", easing: "easeOut",
     });
     editorStore.select(id, "animated");
     editorStore.setMode("select");
-  };
+  }, [getViewportCenter]);
 
-  // ── SVG element → path data converters ────────────────────────────────────
-  // Converts every drawable SVG element type into a "d" path string so the
-  // hand-draw engine can animate it stroke-by-stroke. This is the "auto-boom"
-  // pipeline: drop any SVG → all shapes become animated paths.
-
-  const _circleToPath = (el: Element): string | null => {
-    const cx = parseFloat(el.getAttribute("cx") ?? "0");
-    const cy = parseFloat(el.getAttribute("cy") ?? "0");
-    const r  = parseFloat(el.getAttribute("r")  ?? "0");
-    if (r <= 0) return null;
-    // Two-arc circle: M cx-r,cy a r,r 0 1,0 2r,0 a r,r 0 1,0 -2r,0
-    return `M ${cx - r} ${cy} a ${r} ${r} 0 1 0 ${r * 2} 0 a ${r} ${r} 0 1 0 ${-r * 2} 0`;
-  };
-
-  const _ellipseToPath = (el: Element): string | null => {
-    const cx = parseFloat(el.getAttribute("cx") ?? "0");
-    const cy = parseFloat(el.getAttribute("cy") ?? "0");
-    const rx = parseFloat(el.getAttribute("rx") ?? "0");
-    const ry = parseFloat(el.getAttribute("ry") ?? "0");
-    if (rx <= 0 || ry <= 0) return null;
-    return `M ${cx - rx} ${cy} a ${rx} ${ry} 0 1 0 ${rx * 2} 0 a ${rx} ${ry} 0 1 0 ${-rx * 2} 0`;
-  };
-
-  const _rectToPath = (el: Element): string | null => {
-    const x  = parseFloat(el.getAttribute("x")      ?? "0");
-    const y  = parseFloat(el.getAttribute("y")      ?? "0");
-    const w  = parseFloat(el.getAttribute("width")  ?? "0");
-    const h  = parseFloat(el.getAttribute("height") ?? "0");
-    let   rx = parseFloat(el.getAttribute("rx")     ?? "0");
-    let   ry = parseFloat(el.getAttribute("ry")     ?? "0");
-    if (w <= 0 || h <= 0) return null;
-    // Clamp radii
-    rx = Math.min(rx, w / 2);
-    ry = Math.min(ry || rx, h / 2);
-    rx = rx || ry;
-    if (rx > 0 && ry > 0) {
-      // Rounded rectangle
-      return `M ${x + rx} ${y} L ${x + w - rx} ${y} A ${rx} ${ry} 0 0 1 ${x + w} ${y + ry} L ${x + w} ${y + h - ry} A ${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h} L ${x + rx} ${y + h} A ${rx} ${ry} 0 0 1 ${x} ${y + h - ry} L ${x} ${y + ry} A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`;
-    }
-    return `M ${x} ${y} L ${x + w} ${y} L ${x + w} ${y + h} L ${x} ${y + h} Z`;
-  };
-
-  const _lineToPath = (el: Element): string | null => {
-    const x1 = el.getAttribute("x1") ?? "0";
-    const y1 = el.getAttribute("y1") ?? "0";
-    const x2 = el.getAttribute("x2") ?? "0";
-    const y2 = el.getAttribute("y2") ?? "0";
-    return `M ${x1} ${y1} L ${x2} ${y2}`;
-  };
-
-  const _polyToPath = (el: Element, close: boolean): string | null => {
-    const raw = el.getAttribute("points")?.trim();
-    if (!raw) return null;
-    const nums = raw.split(/[\s,]+/).map(Number);
-    if (nums.length < 4) return null;
-    let d = `M ${nums[0]} ${nums[1]}`;
-    for (let i = 2; i < nums.length; i += 2) {
-      d += ` L ${nums[i]} ${nums[i + 1]}`;
-    }
-    if (close) d += " Z";
-    return d;
-  };
-
-  /** Convert any drawable SVG element into a path "d" string */
-  const _elementToPathData = (el: Element): string | null => {
-    const tag = el.tagName.toLowerCase();
-    switch (tag) {
-      case "path":     return el.getAttribute("d") || null;
-      case "circle":   return _circleToPath(el);
-      case "ellipse":  return _ellipseToPath(el);
-      case "rect":     return _rectToPath(el);
-      case "line":     return _lineToPath(el);
-      case "polygon":  return _polyToPath(el, true);
-      case "polyline": return _polyToPath(el, false);
-      default:         return null;
-    }
-  };
-
-  /** Walk up the DOM to resolve an inherited attribute (stroke, fill, etc.) */
-  const _resolveAttr = (el: Element, attr: string): string | null => {
-    let node: Element | null = el;
-    while (node) {
-      const val = node.getAttribute(attr) || (node as HTMLElement).style?.[attr as any];
-      if (val && val !== "inherit") return val as string;
-      node = node.parentElement;
-    }
-    return null;
-  };
-
-  // SVG parser helper — now handles ALL drawable SVG elements
-  const parseAndInsertSvgText = (text: string) => {
+  // ── SVG Parser ─────────────────────────────────────────────────────────────
+  const parseAndInsertSvgText = useCallback((text: string, opts?: { pendingSave?: boolean; filename?: string }) => {
     const scene = getInsertScene();
     if (!scene) return;
 
-    const parser  = new DOMParser();
-    const doc     = parser.parseFromString(text, "image/svg+xml");
-    const svgEl   = doc.querySelector("svg");
+    // ── Sanitization & Cleaning ──
+    let cleanText = text.trim();
+    // Strip markdown code fences (e.g. ```xml ... ``` or ```svg ... ``` or ``` ... ```)
+    cleanText = cleanText.replace(/^```[a-zA-Z]*\n?/, "");
+    cleanText = cleanText.replace(/```$/, "");
+    cleanText = cleanText.trim();
 
-    // Collect every drawable element (not just <path>)
-    const DRAWABLE = "path, circle, ellipse, rect, line, polygon, polyline";
-    const elements = Array.from(doc.querySelectorAll(DRAWABLE));
+    // Extract precise <svg>...</svg> block case-insensitively if it is surrounded by outer text/garbage
+    const lowerText = cleanText.toLowerCase();
+    const startIdx = lowerText.indexOf("<svg");
+    if (startIdx !== -1) {
+      const endIdx = lowerText.lastIndexOf("</svg>");
+      if (endIdx !== -1) {
+        cleanText = cleanText.substring(startIdx, endIdx + 6);
+      } else {
+        // Heal truncated SVG code automatically
+        cleanText = cleanText.substring(startIdx) + "\n</svg>";
+      }
+    }
+
+    const parser  = new DOMParser();
+    let doc       = parser.parseFromString(cleanText, "image/svg+xml");
+
+    // Check for standard XML parsing errors
+    const parseError = doc.querySelector("parsererror");
+    const DRAWABLE_NAMES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon", "polyline"]);
+    let allElements = Array.from(doc.getElementsByTagName("*"));
+    let elements = allElements.filter(el => DRAWABLE_NAMES.has(el.localName.toLowerCase()));
+
+    // Highly robust fallback: if XML parser fails or returns 0 drawables due to strict namespace/casing/unclosed tags,
+    // fallback to HTML parser which is extremely forgiving and creates a perfect DOM tree for any malformed code!
+    if (parseError || elements.length === 0) {
+      doc = parser.parseFromString(cleanText, "text/html");
+      allElements = Array.from(doc.getElementsByTagName("*"));
+      elements = allElements.filter(el => DRAWABLE_NAMES.has(el.localName.toLowerCase()));
+    }
+
+    const svgEl = doc.querySelector("svg") || allElements.find(el => el.localName.toLowerCase() === "svg") || null;
 
     if (elements.length === 0) {
-      alert("No drawable vector elements found in this SVG.");
+      alert("No drawable vector elements found. Please ensure the SVG contains stroke paths (<path>, <circle>, <rect>, etc.).");
       return;
     }
 
@@ -667,7 +496,6 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
       const parts = vb.trim().split(/[\s,]+/).map(Number);
       if (parts.length === 4) { vbW = parts[2]; vbH = parts[3]; }
     }
-    // Fallback: use width/height if no viewBox
     if (!vb && svgEl) {
       const w = parseFloat(svgEl.getAttribute("width") ?? "0");
       const h = parseFloat(svgEl.getAttribute("height") ?? "0");
@@ -675,56 +503,141 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
     }
 
     const TARGET = 300;
-    const scaleX = TARGET / Math.max(vbW, 1);
-    const scaleY = TARGET / Math.max(vbH, 1);
-    const scale  = Math.min(scaleX, scaleY);
-
+    const scale  = Math.min(TARGET / Math.max(vbW, 1), TARGET / Math.max(vbH, 1));
     const offsetX = -(vbW * scale) / 2;
     const offsetY = -(vbH * scale) / 2;
+    const MICRO_PAUSE = 0.08;
+    const localTime   = getLocalTime();
+    const groupId     = `svg-group-${Date.now()}`;
+    let cursor        = localTime;
+    let insertCount   = 0;
 
-    const MICRO_PAUSE  = 0.08;
-    const localTime    = getLocalTime();
-    const groupId      = `svg-group-${Date.now()}`;
-    let cursor         = localTime;
-    let insertCount    = 0;
+    const hasAnyStroke = elements.some(el => {
+      const s = _resolveAttr(el, "stroke");
+      return s && s !== "none";
+    });
+
+    // Helper to recursively parse nested parent transforms (translate and scale)
+    const getCombinedTransform = (el: Element) => {
+      let x = 0, y = 0, scaleX = 1, scaleY = 1;
+      let node: Element | null = el;
+      while (node) {
+        const transform = node.getAttribute("transform");
+        if (transform) {
+          // Parse translate(x, y) or translate(x)
+          const translateMatch = transform.match(/translate\(\s*(-?\d+\.?\d*)\s*[, ]?\s*(-?\d+\.?\d*)?\s*\)/);
+          if (translateMatch) {
+            x += parseFloat(translateMatch[1]);
+            y += parseFloat(translateMatch[2] ?? "0");
+          }
+          // Parse scale(sx, sy) or scale(s)
+          const scaleMatch = transform.match(/scale\(\s*(-?\d+\.?\d*)\s*[, ]?\s*(-?\d+\.?\d*)?\s*\)/);
+          if (scaleMatch) {
+            const sx = parseFloat(scaleMatch[1]);
+            const sy = parseFloat(scaleMatch[2] ?? scaleMatch[1]);
+            scaleX *= sx;
+            scaleY *= sy;
+          }
+        }
+        node = node.parentElement;
+      }
+      return { x, y, scaleX, scaleY };
+    };
 
     elements.forEach((el, i) => {
+      // 1. Skip elements inside utility groups like <defs>, <clipPath>, <maskKey>, etc.
+      let parent = el.parentElement;
+      let isUtility = false;
+      while (parent) {
+        const tag = parent.tagName.toLowerCase();
+        if (tag === "defs" || tag === "clippath" || tag === "mask" || tag === "metadata") {
+          isUtility = true;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      if (isUtility) return;
+
       const d = _elementToPathData(el);
       if (!d || !d.trim()) return;
 
-      // Resolve styles — walk up parent <g> elements for inherited attrs
-      const stroke = _resolveAttr(el, "stroke") ?? "#1e293b";
-      const fill   = _resolveAttr(el, "fill") ?? "none";
-      const sw     = parseFloat(_resolveAttr(el, "stroke-width") ?? "2") * scale;
+      const stroke  = _resolveAttr(el, "stroke") ?? "none";
+      const fill    = _resolveAttr(el, "fill")   ?? "none";
+
+      // 2. Skip giant background bounding boxes or empty viewbox rectangles
+      if (el.tagName.toLowerCase() === "rect") {
+        const w = parseFloat(el.getAttribute("width") ?? "0");
+        const h = parseFloat(el.getAttribute("height") ?? "0");
+        if ((Math.abs(w - vbW) < 2 && Math.abs(h - vbH) < 2) || (stroke === "none" && fill === "none")) {
+          return; // Skip this background frame
+        }
+      }
+
+      // 3. Resolve parent transforms
+      const { x: tX, y: tY, scaleX: tSX, scaleY: tSY } = getCombinedTransform(el);
+      const finalX = offsetX + tX * scale;
+      const finalY = offsetY + tY * scale;
+      const finalScaleX = scale * tSX;
+      const finalScaleY = scale * tSY;
+
+      const sw      = parseFloat(_resolveAttr(el, "stroke-width") ?? "2") * finalScaleX;
       const opacity = parseFloat(_resolveAttr(el, "opacity") ?? "1");
       const duration = getPathDrawDuration(d);
-      const id = `svg-import-${groupId}-${i}`;
-
+      const baseId   = `svg-import-${groupId}-${i}`;
       const subPaths = splitCompoundPath(d);
       const hasSubPaths = subPaths.length > 1;
+      const hasStroke = stroke !== "none";
+      const hasFill   = fill   !== "none";
 
-      sceneStore.addSvgObject(scene.id, {
-        id,
-        groupId,
-        pathData:    d,
-        x:           offsetX,
-        y:           offsetY,
-        scaleX:      scale,
-        scaleY:      scale,
-        strokeColor: stroke === "none" ? "#1e293b" : stroke,
-        strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
-        fillColor:   fill === "none" ? undefined : fill,
-        startTime:   cursor,
-        duration,
-        easing:      SvgEasing.easeOut,
-        drawOrder:   i,
-        subPaths:    hasSubPaths ? subPaths : undefined,
-        handVisible: true,
-        opacity:     opacity < 1 ? opacity : undefined,
-      });
-
-      cursor += duration + MICRO_PAUSE;
-      insertCount++;
+      if (hasStroke && hasFill) {
+        const strokeDur = duration * 0.7;
+        const fillDur   = duration * 0.5;
+        sceneStore.addSvgObject(scene.id, {
+          id: `${baseId}-stroke`, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke, strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: undefined, startTime: cursor, duration: strokeDur,
+          easing: SvgEasing.easeOut, drawOrder: i * 2,
+          subPaths: hasSubPaths ? subPaths : undefined, handVisible: true,
+          opacity: opacity < 1 ? opacity : undefined, drawMode: "stroke",
+        });
+        cursor += strokeDur;
+        sceneStore.addSvgObject(scene.id, {
+          id: `${baseId}-fill`, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: "none", strokeWidth: 0, fillColor: fill,
+          startTime: cursor, duration: fillDur, easing: SvgEasing.easeOut,
+          drawOrder: i * 2 + 1, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode: "fill",
+        });
+        cursor += fillDur + MICRO_PAUSE;
+        insertCount += 2;
+      } else if (hasStroke) {
+        sceneStore.addSvgObject(scene.id, {
+          id: baseId, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke, strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: undefined, startTime: cursor, duration, easing: SvgEasing.easeOut,
+          drawOrder: i * 2, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode: "stroke",
+        });
+        cursor += duration + MICRO_PAUSE;
+        insertCount++;
+      } else {
+        const drawMode = hasAnyStroke ? "fill" : "stroke";
+        sceneStore.addSvgObject(scene.id, {
+          id: baseId, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke === "none" ? "#1e293b" : stroke,
+          strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: fill === "none" ? undefined : fill,
+          startTime: cursor, duration, easing: SvgEasing.easeOut,
+          drawOrder: i * 2, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode,
+        });
+        cursor += duration + MICRO_PAUSE;
+        insertCount++;
+      }
     });
 
     if (insertCount === 0) {
@@ -733,462 +646,1043 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
     }
 
     editorStore.setMode("select");
-  };
 
-  const importSvg = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const text = ev.target?.result as string;
-      if (text) parseAndInsertSvgText(text);
+    // If requested, add to local assets list with pendingSave
+    if (opts?.pendingSave) {
+      const assetId = `local-${Date.now()}`;
+      const combinedPathData = elements.map(el => _elementToPathData(el)).filter(Boolean).join(" ");
+      setLocalAssets(prev => {
+        const filtered = prev.filter(x => x.name !== (opts.filename ?? "Imported SVG"));
+        return [
+          {
+            id: assetId,
+            name: opts.filename ?? "Imported SVG",
+            type: "svg",
+            pathData: combinedPathData,
+            pendingSave: true,
+            svgText: text,
+          },
+          ...filtered,
+        ].slice(0, 12);
+      });
+    }
+  }, [getViewportCenter]);
+
+  const handleUniversalImport = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const scene = getInsertScene();
+    if (!scene) return;
+    const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
+    const localTime = getLocalTime();
+
+    // ── Case 1: Image URL or Base64 Image ──
+    const isBase64Image = /^data:image\//i.test(trimmed);
+    const isRasterUrl = /\.(png|jpg|jpeg|gif|webp)$/i.test(trimmed);
+    const isGenericUrl = trimmed.startsWith("http") && !trimmed.toLowerCase().includes("<svg") && !trimmed.toLowerCase().endsWith(".svg");
+
+    if (isBase64Image || isRasterUrl || isGenericUrl) {
+      const id = `img-paste-${Date.now()}`;
+      sceneStore.addObject(scene.id, {
+        id, type: "image" as any,
+        x: center.x - 80, y: center.y - 60,
+        width: 160, height: 120,
+        src: trimmed, fillColor: "transparent",
+        startTime: localTime, duration: 1.5,
+        animationType: "fade", easing: "easeOut",
+      });
+      // Add to local assets as image
+      const assetId = `local-paste-${Date.now()}`;
+      setLocalAssets(prev => {
+        const filtered = prev.filter(x => x.id !== assetId);
+        return [
+          {
+            id: assetId,
+            name: "Pasted Image",
+            type: "image",
+            svgUrl: trimmed,
+            pendingSave: true,
+            svgText: trimmed,
+          },
+          ...filtered,
+        ].slice(0, 12);
+      });
+      editorStore.select(id, "animated");
+      editorStore.setMode("select");
+      return;
+    }
+
+    // ── Case 2: SVG URL ──
+    if (trimmed.startsWith("http") && trimmed.toLowerCase().endsWith(".svg")) {
+      try {
+        const res = await fetch(trimmed);
+        const svgText = await res.text();
+        parseAndInsertSvgText(svgText, { pendingSave: true, filename: "Fetched SVG" });
+      } catch {
+        alert("Failed to fetch SVG from the URL. Please ensure the URL is public and allows CORS.");
+      }
+      return;
+    }
+
+    // ── Case 3: Raw SVG XML Code ──
+    const lower = trimmed.toLowerCase();
+    if (lower.includes("<svg") || lower.includes("<path") || lower.includes("<rect")) {
+      parseAndInsertSvgText(trimmed, { pendingSave: true, filename: "Pasted AI Sketch" });
+      return;
+    }
+
+    // ── Case 3.5: Paste Math Equation ──
+    const isMathFormula = (str: string): boolean => {
+      const s = str.trim();
+      if (s.startsWith("\\") || s.startsWith("$$") || s.startsWith("$")) return true;
+      if (s.includes("^") || s.includes("_") || /[⁰¹²³⁴⁵⁶⁷⁸⁹ⁿⁱˣ√]/.test(s)) return true;
+      if (s.includes("=") && (s.includes("+") || s.includes("-") || s.includes("*") || s.includes("/") || /[a-z]/i.test(s))) return true;
+      const mathRegex = /(\\frac|\\sqrt|\\sum|\\int|\\alpha|\\beta|\\pi|\\theta|\\infty|\\partial|\\cdot|\\times)/i;
+      return mathRegex.test(s);
     };
-    reader.readAsText(file);
-  };
 
+    if (isMathFormula(trimmed)) {
+      try {
+        let formula = trimmed;
+        
+        // 1. Translate literal Unicode superscripts to LaTeX exponents
+        const superscripts: Record<string, string> = {
+          "⁰": "^0", "¹": "^1", "²": "^2", "³": "^3", "⁴": "^4",
+          "⁵": "^5", "⁶": "^6", "⁷": "^7", "⁸": "^8", "⁹": "^9",
+          "ⁿ": "^n", "ⁱ": "^i", "ˣ": "^x"
+        };
+        for (const [char, replacement] of Object.entries(superscripts)) {
+          formula = formula.replaceAll(char, replacement);
+        }
+
+        // 2. Translate literal Unicode square root "√" to LaTeX "\sqrt"
+        // Case A: √ followed by parenthesized term, e.g., √(x + y) -> \sqrt{x + y}
+        formula = formula.replace(/√\(([^)]+)\)/g, "\\sqrt{$1}");
+        // Case B: √ followed by single letter or digit, e.g., √x -> \sqrt{x}
+        formula = formula.replace(/√([a-zA-Z0-9])/g, "\\sqrt{$1}");
+
+        // 3. Translate multiplication asterisk to standard math \times cross
+        formula = formula.replace(/\*/g, "\\times");
+
+        const url = `https://math.vercel.app/?from=${encodeURIComponent(formula)}&color=black`;
+        const res = await fetch(url);
+        const svgText = await res.text();
+        parseAndInsertSvgText(svgText, { pendingSave: true, filename: `Formula: ${trimmed.slice(0, 24)}` });
+        return;
+      } catch (err) {
+        console.warn("LaTeX fetch failed, falling back to plain text", err);
+      }
+    }
+
+    // ── Case 4: Plain Text ──
+    const textId = `text-paste-${Date.now()}`;
+    sceneStore.addObject(scene.id, {
+      id: textId,
+      type: "text" as any,
+      x: center.x - 100, y: center.y - 20,
+      content: trimmed,
+      fontSize: 24,
+      fontFamily: "Outfit",
+      fillColor: "#0f172a",
+      startTime: localTime,
+      duration: 1.0,
+      animationType: "write",
+    } as any);
+    editorStore.select(textId, "animated");
+    editorStore.setMode("select");
+  }, [getViewportCenter, parseAndInsertSvgText]);
+
+  // ── Load cloud assets ──────────────────────────────────────────────────────
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoadingCloud(true);
+      try {
+        const list = await fetchCloudSvgs();
+        if (active) setCloudAssets(list);
+      } catch {
+        // silent
+      } finally {
+        if (active) setLoadingCloud(false);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // ── Search ─────────────────────────────────────────────────────────────────
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
     setLoadingSearch(true);
     try {
-      const url = `https://api.iconify.design/search?query=${encodeURIComponent(searchQuery)}&limit=36`;
-      const res = await fetch(url);
+      const url = `https://api.iconify.design/search?query=${encodeURIComponent(searchQuery)}&limit=48`;
+      const res  = await fetch(url);
       const data = await res.json();
-      if (data && data.icons) {
+      if (data?.icons) {
         const mapped = data.icons.map((item: string) => {
           const [prefix, name] = item.split(":");
-          return {
-            rawName: item,
-            name: name.replace(/-/g, " "),
-            url: `https://api.iconify.design/${prefix}/${name}.svg`
-          };
+          return { rawName: item, name: name.replace(/-/g, " "), url: `https://api.iconify.design/${prefix}/${name}.svg` };
         });
-        setIconsList(mapped);
+        setSearchResults(mapped);
       } else {
-        setIconsList([]);
+        setSearchResults([]);
       }
-    } catch (err) {
-      console.error("Icon search failed:", err);
+    } catch {
+      setSearchResults([]);
     } finally {
       setLoadingSearch(false);
     }
   };
 
-  const selectOnlineIcon = async (icon: { rawName: string; url: string }) => {
+  const selectOnlineIcon = async (icon: { rawName: string; name: string; url: string }) => {
     setImportingIcon(icon.rawName);
     try {
-      const res = await fetch(icon.url);
+      const res  = await fetch(icon.url);
       const text = await res.text();
-      parseAndInsertSvgText(text);
-    } catch (err) {
-      console.error("Failed to load online SVG:", err);
+      parseAndInsertSvgText(text, { pendingSave: true, filename: icon.name });
+    } catch {
       alert("Failed to load this SVG icon. Please try another one.");
     } finally {
       setImportingIcon(null);
     }
   };
 
-  const shapeNames = Object.keys(SVG_SHAPES) as ShapeName[];
+  // ── File handlers ──────────────────────────────────────────────────────────
+  const handleSvgFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const text = ev.target?.result as string;
+      if (text) parseAndInsertSvgText(text, { pendingSave: true, filename: file.name.replace(/\.svg$/i, "") });
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImageFile = (file: File) => {
+    insertImage(file);
+    const assetId = `local-img-${Date.now()}`;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64data = reader.result as string;
+      setLocalAssets(prev => {
+        const filtered = prev.filter(x => x.name !== file.name.replace(/\.[^/.]+$/, ""));
+        return [
+          {
+            id: assetId,
+            name: file.name.replace(/\.[^/.]+$/, ""),
+            type: "image",
+            svgUrl: base64data,
+            pendingSave: true,
+            svgText: base64data,
+          },
+          ...filtered,
+        ].slice(0, 12);
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      if (file.type === "image/svg+xml" || file.name.endsWith(".svg")) {
+        handleSvgFile(file);
+      } else if (file.type.startsWith("image/")) {
+        handleImageFile(file);
+      }
+    });
+  };
+
+  // ── Drag and drop ──────────────────────────────────────────────────────────
+  const onDragOver = (e: DragEvent) => { e.preventDefault(); setIsDragOver(true); };
+  const onDragLeave = () => setIsDragOver(false);
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    handleFiles(e.dataTransfer.files);
+  };
+
+  // ── Save to cloud ──────────────────────────────────────────────────────────
+  const saveToCloud = async (asset: LocalAsset) => {
+    if (!asset.svgText) { alert("No data to save."); return; }
+    setSavingToCloud(asset.id);
+    try {
+      let created: CloudSvgAsset;
+
+      if (asset.type === "image") {
+        created = await uploadSvgToCloud({
+          name: asset.name,
+          pathData: asset.svgText,
+          strokeColor: "none",
+          strokeWidth: 0,
+          fillColor: "transparent",
+          tags: ["image", "custom"],
+          isCustom: true,
+          type: "image",
+        });
+      } else {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(asset.svgText, "image/svg+xml");
+        const el  = doc.querySelector("path");
+        const d   = el?.getAttribute("d") ?? "";
+        const segments = d.split(/(?=[Mm])/).filter(s => s.trim());
+
+        created = await uploadSvgToCloud({
+          name: asset.name,
+          pathData: d || "M 0 0",
+          strokeColor: "#1e293b",
+          strokeWidth: 3,
+          fillColor: "transparent",
+          subPaths: segments.length > 1 ? segments : undefined,
+          tags: ["svg", "custom"],
+          isCustom: true,
+          type: "svg",
+        });
+      }
+
+      setCloudAssets(prev => [...prev, created]);
+      setLocalAssets(prev => prev.map(a => a.id === asset.id ? { ...a, pendingSave: false, cloudId: created.id } : a));
+    } catch {
+      alert("Failed to save to database. Is Firebase configured?");
+    } finally {
+      setSavingToCloud(null);
+    }
+  };
+
+  // ── Delete cloud asset ─────────────────────────────────────────────────────
+  const deleteCloudAsset = async (id: string, name: string) => {
+    if (!confirm(`Delete "${name}" from the database?`)) return;
+    try {
+      await deleteSvgFromCloud(id);
+      setCloudAssets(prev => prev.filter(a => a.id !== id));
+    } catch {
+      alert("Failed to delete.");
+    }
+  };
+
+  // ── Insert cloud asset ─────────────────────────────────────────────────────
+  const insertCloudAsset = (asset: CloudSvgAsset) => {
+    const scene = getInsertScene();
+    if (!scene) return;
+    const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
+    const isImage = asset.type === "image" || asset.pathData.startsWith("data:image/");
+    const id = isImage ? `img-cloud-${Date.now()}` : `svg-cloud-${Date.now()}`;
+
+    if (isImage) {
+      sceneStore.addObject(scene.id, {
+        id,
+        type: "image" as any,
+        x: center.x - 80, y: center.y - 60,
+        width: 160, height: 120,
+        src: asset.pathData,
+        fillColor: "transparent",
+        startTime: getLocalTime(), duration: 1.5,
+        animationType: "fade", easing: "easeOut",
+      });
+      editorStore.select(id, "animated");
+      editorStore.setMode("select");
+    } else {
+      sceneStore.addSvgObject(scene.id, {
+        id, pathData: asset.pathData, subPaths: asset.subPaths,
+        x: center.x - 75, y: center.y - 75,
+        scaleX: 1.5, scaleY: 1.5,
+        strokeColor: "#1e293b", strokeWidth: 3, fillColor: "transparent",
+        startTime: getLocalTime(), duration: 1.5, easing: SvgEasing.easeInOut,
+      });
+      editorStore.select(id, "svg");
+      editorStore.setMode("select");
+    }
+
+    setLocalAssets(prev => {
+      const filtered = prev.filter(x => x.id !== asset.id);
+      return [
+        {
+          id: asset.id,
+          name: asset.name,
+          pathData: isImage ? undefined : asset.pathData,
+          svgUrl: isImage ? asset.pathData : undefined,
+          type: "cloud",
+          cloudId: asset.id,
+        },
+        ...filtered,
+      ].slice(0, 12);
+    });
+  };
+
+  const handleSelectAsset = (asset: any) => {
+    if (asset.type === "shape") {
+      insertShape(asset.name as ShapeName);
+    } else if (asset.type === "svg") {
+      if (asset.svgText) {
+        parseAndInsertSvgText(asset.svgText);
+      } else if (asset.pathData) {
+        insertSvgPath(asset.pathData, asset.name);
+      }
+    } else if (asset.type === "image") {
+      const src = asset.svgUrl || asset.pathData || "";
+      if (src) {
+        const scene = getInsertScene();
+        if (!scene) return;
+        const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
+        const id = `img-click-${Date.now()}`;
+        sceneStore.addObject(scene.id, {
+          id, type: "image" as any,
+          x: center.x - 80, y: center.y - 60,
+          width: 160, height: 120,
+          src, fillColor: "transparent",
+          startTime: getLocalTime(), duration: 1.5,
+          animationType: "fade", easing: "easeOut",
+        });
+        editorStore.select(id, "animated");
+        editorStore.setMode("select");
+      }
+    } else if (asset.type === "cloud") {
+      insertCloudAsset(asset as CloudSvgAsset);
+    }
+
+    // Update in recent assets list
+    setLocalAssets(prev => {
+      const filtered = prev.filter(x => x.id !== asset.id && x.name !== asset.name);
+      return [
+        {
+          id: asset.id,
+          name: asset.name,
+          type: asset.type,
+          pathData: asset.pathData,
+          svgUrl: asset.svgUrl || (asset.type === "image" ? asset.pathData : undefined),
+          svgText: asset.svgText,
+          cloudId: asset.cloudId || (asset.type === "cloud" ? asset.id : undefined),
+          pendingSave: asset.pendingSave,
+        },
+      ].slice(0, 12);
+    });
+  };
+
+  // ── Derived: filtered assets ──────────────────────────────────────────────
+  const q = searchQuery.trim().toLowerCase();
+  const showSearchResults = q.length > 0 && searchResults.length > 0;
+
+  const isConfigured = isCloudConfigured();
+
+  // ── Shared styles ──────────────────────────────────────────────────────────
+  const tabBtn = (active: boolean) => ({
+    flex: 1,
+    border: "none",
+    borderRadius: 6,
+    padding: "7px 4px",
+    fontSize: 10,
+    fontWeight: "600" as const,
+    cursor: "pointer",
+    background: active ? C.accentDim : "transparent",
+    color: active ? C.accent : C.textMuted,
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+    transition: "all 0.15s",
+    letterSpacing: "0.02em",
+  });
+
+  const gridCard = {
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    cursor: "pointer",
+    padding: 6,
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    gap: 4,
+    transition: "all 0.15s",
+    position: "relative" as const,
+    overflow: "hidden",
+  };
+
+  const sectionLabel = {
+    fontSize: 9,
+    fontWeight: "700" as const,
+    color: C.textMuted,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.10em",
+    padding: "2px 0",
+  };
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        fontFamily: "monospace",
-        boxSizing: "border-box",
-        overflow: "hidden",
-      }}
-    >
-      {/* ── Visual Tab Bar ─────────────────────────────────────────────────── */}
-      <div
-        style={{
-          display: "flex",
-          background: "rgba(0,0,0,0.2)",
-          borderBottom: `1px solid ${COLORS.border}`,
-          padding: "4px 6px",
-          gap: 2,
-        }}
-      >
-        {[
-          { id: "illustrations", label: "🎨 Art" },
-          { id: "shapes", label: "⬡ Shapes" },
-          { id: "cloud", label: "☁️ Db" },
-          { id: "search", label: "🔍 Find" },
-          { id: "upload", label: "📤 Import" },
-          { id: "hands", label: "✋ Hand" },
-        ].map(tab => {
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{
-                flex: 1,
-                border: "none",
-                borderRadius: 4,
-                padding: "6px 2px",
-                fontSize: 8,
-                fontWeight: "bold",
-                cursor: "pointer",
-                background: active ? COLORS.accentDim : "transparent",
-                color: active ? COLORS.accent : COLORS.muted,
-                transition: "all 0.15s",
-              }}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", fontFamily: "Inter, system-ui, sans-serif", boxSizing: "border-box", overflow: "hidden", background: C.bg }}>
+
+      {/* ── Tab Bar ─────────────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", background: "rgba(0,0,0,0.25)", borderBottom: `1px solid ${C.border}`, padding: "5px 8px", gap: 4 }}>
+        <button style={tabBtn(activeTab === "library")} onClick={() => setActiveTab("library")}>
+          <LibraryIcon /> Library
+        </button>
+        <button style={tabBtn(activeTab === "hands")} onClick={() => setActiveTab("hands")}>
+          <HandIcon /> Hands
+        </button>
       </div>
 
-      {/* ── Scrollable Tab Content Container ───────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: "auto", padding: 10 }}>
+      {/* ── Content ─────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px", display: "flex", flexDirection: "column", gap: 14 }}>
 
-        {/* ── TAB: CLOUD / DATABASE ── */}
-        {activeTab === "cloud" && (
-          <CloudDatabasePanel 
-            COLORS={COLORS} 
-            insertShape={(pathData, name, subPaths) => {
-              const scene = getInsertScene();
-              if (!scene) return;
-              const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
-              const id = `svg-cloud-${Date.now()}`;
-              sceneStore.addSvgObject(scene.id, {
-                id,
-                pathData,
-                subPaths,
-                x: center.x - 75,
-                y: center.y - 75,
-                scaleX: 1.5, scaleY: 1.5,
-                strokeColor: "#1e293b",
-                strokeWidth: 3,
-                fillColor: "transparent",
-                startTime: getLocalTime(),
-                duration: 1.5,
-                easing: SvgEasing.easeInOut,
-              });
-              editorStore.select(id, "svg");
-              editorStore.setMode("select");
-            }}
-          />
-        )}
-
-        {/* ── TAB: ILLUSTRATIONS ── */}
-        {activeTab === "illustrations" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>
-              Whiteboard Illustrations
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
-              {(Object.keys(PREMIUM_ILLUSTRATIONS) as Array<keyof typeof PREMIUM_ILLUSTRATIONS>).map(name => (
+        {/* ══════════════ LIBRARY TAB ══════════════ */}
+        {activeTab === "library" && (
+          <>
+            {/* ── Quick Canvas Elements ── */}
+            <div>
+              <span style={{ fontSize: "9px", fontWeight: "bold", color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: "8px" }}>
+                ➕ Add Canvas Elements
+              </span>
+              <div style={{ display: "flex", gap: "8px", marginBottom: 6 }}>
+                {/* Add Text Box */}
                 <button
-                  key={name}
-                  onClick={() => insertPremiumIllustration(name)}
+                  onClick={() => {
+                    const scene = getInsertScene();
+                    if (scene) {
+                      const center = getViewportCenter ? getViewportCenter() : { x: 0, y: 0 };
+                      const textId = `text-${Date.now()}`;
+                      sceneStore.addObject(scene.id, {
+                        id: textId,
+                        type: "text",
+                        x: center.x - 100, y: center.y - 20,
+                        content: "Add text here",
+                        fontSize: 36,
+                        fontFamily: "Outfit",
+                        fillColor: "#ffffff",
+                        startTime: getLocalTime(),
+                        duration: 1.5,
+                        animationType: "write",
+                      } as any);
+                      editorStore.select(textId, "animated");
+                      editorStore.setMode("select");
+                    }
+                  }}
                   style={{
-                    aspectRatio: "1",
-                    borderRadius: 8,
-                    border: `1px solid ${COLORS.border}`,
-                    background: COLORS.surface,
-                    cursor: "pointer",
-                    padding: 8,
+                    flex: 1,
                     display: "flex",
-                    flexDirection: "column",
                     alignItems: "center",
-                    gap: 6,
-                    boxShadow: "0 2px 5px rgba(0,0,0,0.15)",
+                    justifyContent: "center",
+                    gap: "5px",
+                    padding: "8px 0",
+                    borderRadius: "8px",
+                    background: C.accentDim,
+                    border: `1px solid ${C.borderHi}`,
+                    color: C.text,
+                    cursor: "pointer",
+                    fontSize: "10px",
+                    fontWeight: "bold",
                     transition: "all 0.15s",
                   }}
                   onMouseEnter={e => {
-                    e.currentTarget.style.borderColor = COLORS.accent;
-                    e.currentTarget.style.background = COLORS.accentDim;
-                    e.currentTarget.style.transform = "scale(1.03)";
+                    e.currentTarget.style.background = C.accent;
+                    e.currentTarget.style.color = "#000";
                   }}
                   onMouseLeave={e => {
-                    e.currentTarget.style.borderColor = COLORS.border;
-                    e.currentTarget.style.background = COLORS.surface;
-                    e.currentTarget.style.transform = "scale(1)";
+                    e.currentTarget.style.background = C.accentDim;
+                    e.currentTarget.style.color = C.text;
                   }}
                 >
-                  <div style={{ width: "80%", flex: 1 }}>
-                    <ShapePreview pathData={PREMIUM_ILLUSTRATIONS[name]} stroke={COLORS.accent} />
-                  </div>
-                  <span style={{ fontSize: 8, color: COLORS.text, fontWeight: "bold", textTransform: "capitalize", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>
-                    {name}
-                  </span>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 20V4M18 4H6" />
+                  </svg>
+                  <span>Text Box</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
 
-        {/* ── TAB: SHAPES ── */}
-        {activeTab === "shapes" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>
-              Standard Shapes
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
-              {shapeNames.map(name => (
+                {/* Add Rectangle */}
                 <button
-                  key={name}
-                  onClick={() => insertShape(name)}
+                  onClick={() => insertShape("rectangle")}
                   style={{
-                    aspectRatio: "1",
-                    borderRadius: 6,
-                    border: `1px solid ${COLORS.border}`,
-                    background: COLORS.surface,
-                    cursor: "pointer",
-                    padding: 6,
+                    flex: 1,
                     display: "flex",
-                    flexDirection: "column",
                     alignItems: "center",
-                    gap: 4,
-                    boxShadow: "0 2px 5px rgba(0,0,0,0.1)",
+                    justifyContent: "center",
+                    gap: "5px",
+                    padding: "8px 0",
+                    borderRadius: "8px",
+                    background: C.surface,
+                    border: `1px solid ${C.border}`,
+                    color: C.text,
+                    cursor: "pointer",
+                    fontSize: "10px",
+                    fontWeight: "bold",
                     transition: "all 0.15s",
                   }}
                   onMouseEnter={e => {
-                    e.currentTarget.style.borderColor = COLORS.accent;
-                    e.currentTarget.style.background = COLORS.accentDim;
-                    e.currentTarget.style.transform = "scale(1.03)";
+                    e.currentTarget.style.borderColor = C.accent;
+                    e.currentTarget.style.background = C.surfaceHi;
                   }}
                   onMouseLeave={e => {
-                    e.currentTarget.style.borderColor = COLORS.border;
-                    e.currentTarget.style.background = COLORS.surface;
-                    e.currentTarget.style.transform = "scale(1)";
+                    e.currentTarget.style.borderColor = C.border;
+                    e.currentTarget.style.background = C.surface;
                   }}
                 >
-                  <div style={{ width: "90%", flex: 1 }}>
-                    <ShapePreview pathData={SVG_SHAPES[name]} stroke={COLORS.accent} />
-                  </div>
-                  <span style={{ fontSize: 7, color: COLORS.muted, textTransform: "capitalize", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%" }}>
-                    {name}
-                  </span>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  </svg>
+                  <span>Rect</span>
                 </button>
-              ))}
-            </div>
-          </div>
-        )}
 
-        {/* ── TAB: SEARCH ONLINE ── */}
-        {activeTab === "search" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              Search 200,000+ Online Icons
+                {/* Add Circle */}
+                <button
+                  onClick={() => insertShape("circle")}
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "5px",
+                    padding: "8px 0",
+                    borderRadius: "8px",
+                    background: C.surface,
+                    border: `1px solid ${C.border}`,
+                    color: C.text,
+                    cursor: "pointer",
+                    fontSize: "10px",
+                    fontWeight: "bold",
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = C.accent;
+                    e.currentTarget.style.background = C.surfaceHi;
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = C.border;
+                    e.currentTarget.style.background = C.surface;
+                  }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                  </svg>
+                  <span>Circle</span>
+                </button>
+              </div>
             </div>
-            
-            <form onSubmit={handleSearch} style={{ display: "flex", gap: 4 }}>
-              <input
-                type="text"
-                placeholder="Find icons (e.g. coffee, house)..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                style={{
-                  flex: 1,
-                  padding: "5px 8px",
-                  borderRadius: 5,
-                  border: `1px solid ${COLORS.border}`,
-                  background: COLORS.dimmer,
-                  color: COLORS.text,
-                  fontSize: 10,
-                  outline: "none",
-                }}
-              />
-              <button
-                type="submit"
-                disabled={loadingSearch}
-                style={{
-                  padding: "0 10px",
-                  borderRadius: 5,
-                  background: COLORS.accent,
-                  color: "#ffffff",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 9,
-                  fontWeight: "bold",
-                }}
-              >
-                {loadingSearch ? "..." : "Search"}
-              </button>
-            </form>
 
-            {iconsList.length > 0 && (
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(4, 1fr)",
-                gap: 5,
-                marginTop: 4,
-                maxHeight: 280,
-                overflowY: "auto",
-                border: `1px solid rgba(255, 255, 255, 0.05)`,
-                borderRadius: 6,
-                padding: 6,
-                background: "rgba(0, 0, 0, 0.2)"
-              }}>
-                {iconsList.map(icon => {
-                  const isImporting = importingIcon === icon.rawName;
-                  return (
-                    <button
-                      key={icon.rawName}
-                      title={icon.name}
-                      onClick={() => selectOnlineIcon(icon)}
-                      disabled={!!importingIcon}
-                      style={{
-                        aspectRatio: "1",
-                        borderRadius: 5,
-                        border: `1px solid ${isImporting ? COLORS.accent : COLORS.border}`,
-                        background: isImporting ? COLORS.accentDim : COLORS.surface,
-                        cursor: "pointer",
-                        padding: 5,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        transition: "all 0.15s",
-                      }}
-                      onMouseEnter={e => {
-                        if (!importingIcon) {
-                          e.currentTarget.style.borderColor = COLORS.accent;
-                          e.currentTarget.style.background = COLORS.accentDim;
-                        }
-                      }}
-                      onMouseLeave={e => {
-                        if (!importingIcon) {
-                          e.currentTarget.style.borderColor = COLORS.border;
-                          e.currentTarget.style.background = COLORS.surface;
-                        }
-                      }}
-                    >
-                      {isImporting ? (
-                        <span style={{ fontSize: 9, color: COLORS.accent, fontWeight: "bold" }}>↓</span>
-                      ) : (
-                        <img
-                          src={icon.url}
-                          alt={icon.name}
-                          style={{
-                            width: "90%",
-                            height: "90%",
-                            objectFit: "contain",
-                            filter: "invert(65%) sepia(21%) saturate(1450%) hue-rotate(215deg) brightness(98%) contrast(92%)"
-                          }}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
+            {/* ── Recent Assets Section (At the top of all assets) ── */}
+            {localAssets.length > 0 && (
+              <div>
+                <span style={sectionLabel}>🕒 Recent Assets</span>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginTop: 6 }}>
+                  {localAssets.map(asset => {
+                    const isImg = asset.type === "image" || !!asset.svgUrl;
+                    const hasOutline = !isImg && !!asset.pathData;
+
+                    return (
+                      <div
+                        key={asset.id}
+                        onClick={() => handleSelectAsset(asset)}
+                        draggable={true}
+                        onDragStart={e => {
+                          e.dataTransfer.setData("application/json", JSON.stringify({
+                            type: asset.type,
+                            name: asset.name,
+                            pathData: asset.pathData,
+                            svgUrl: asset.svgUrl,
+                            svgText: asset.svgText,
+                            cloudId: asset.cloudId,
+                          }));
+                        }}
+                        title={asset.name}
+                        style={{
+                          borderRadius: 8,
+                          border: `1px solid ${C.border}`,
+                          background: C.surface,
+                          cursor: "grab",
+                          padding: 6,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 4,
+                          transition: "all 0.15s ease",
+                          position: "relative",
+                          overflow: "hidden",
+                          height: 72,
+                        }}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.borderColor = C.accent;
+                          e.currentTarget.style.background = C.surfaceHi;
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.borderColor = C.border;
+                          e.currentTarget.style.background = C.surface;
+                        }}
+                      >
+                        {/* Visual Preview */}
+                        <div style={{ width: "100%", height: 42, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                          {isImg ? (
+                            <img src={asset.svgUrl || asset.pathData} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                          ) : hasOutline ? (
+                            <ShapePreview pathData={asset.pathData!} stroke={C.accent} />
+                          ) : (
+                            <span style={{ fontSize: 9, color: C.textMuted, fontWeight: 700 }}>SVG</span>
+                          )}
+                        </div>
+
+                        {/* Title Caption */}
+                        <div style={{ fontSize: 8, color: C.textMuted, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textTransform: "capitalize" }}>
+                          {asset.name}
+                        </div>
+
+                        {/* Database Save Button/Overlay for Local unsaved items */}
+                        {asset.pendingSave && !asset.cloudId && (
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              saveToCloud(asset);
+                            }}
+                            disabled={savingToCloud === asset.id}
+                            title="Save to database"
+                            style={{
+                              position: "absolute",
+                              top: 4,
+                              right: 4,
+                              background: C.greenDim,
+                              border: `1px solid ${C.green}`,
+                              borderRadius: 4,
+                              width: 14,
+                              height: 14,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              color: C.green,
+                              cursor: "pointer",
+                              padding: 0,
+                              zIndex: 10,
+                            }}
+                          >
+                            <SaveIcon />
+                          </button>
+                        )}
+
+                        {/* Saved to Cloud checkmark/icon */}
+                        {asset.cloudId && (
+                          <div style={{ position: "absolute", top: 4, right: 4, color: C.green, display: "flex", pointerEvents: "none" }}>
+                            <CloudIcon />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
-          </div>
-        )}
 
-        {/* ── TAB: UPLOAD / LOCAL ── */}
-        {activeTab === "upload" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              Upload Local Assets
-            </div>
-
-            {/* Image upload zone */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/*"
-                style={{ display: "none" }}
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (file) insertImage(file);
-                  e.target.value = "";
-                }}
-              />
-              <button
-                onClick={() => fileRef.current?.click()}
+            {/* ── Vector & Image Import (Drag-and-Drop Dropzone - Always Open/Visible) ── */}
+            <div>
+              <span style={sectionLabel}>📥 Vector & Image Import</span>
+              <div
+                ref={dropZoneRef}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
                 style={{
-                  width: "100%",
-                  padding: "16px 0",
-                  borderRadius: 8,
-                  border: `1.5px dashed ${COLORS.border}`,
-                  background: COLORS.surface,
-                  color: COLORS.text,
-                  cursor: "pointer",
-                  fontSize: 10,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  transition: "all 0.15s",
+                  marginTop: 5, borderRadius: 10,
+                  border: `2px dashed ${isDragOver ? C.accent : C.border}`,
+                  background: isDragOver ? C.accentDim : "rgba(255,255,255,0.02)",
+                  padding: "16px 12px",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+                  cursor: "pointer", transition: "all 0.2s",
                 }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.borderColor = COLORS.accent;
-                  e.currentTarget.style.background = COLORS.accentDim;
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.borderColor = COLORS.border;
-                  e.currentTarget.style.background = COLORS.surface;
-                }}
-              >
-                <span style={{ fontSize: 16 }}>📷</span>
-                <span>Upload Custom Image</span>
-              </button>
-            </div>
-
-            {/* SVG import zone */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <input
-                ref={svgFileRef}
-                type="file"
-                accept=".svg,image/svg+xml"
-                style={{ display: "none" }}
-                onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (file) importSvg(file);
-                  e.target.value = "";
-                }}
-              />
-              <button
                 onClick={() => svgFileRef.current?.click()}
-                style={{
-                  width: "100%",
-                  padding: "16px 0",
-                  borderRadius: 8,
-                  border: `1.5px dashed ${COLORS.border}`,
-                  background: COLORS.surface,
-                  color: COLORS.text,
-                  cursor: "pointer",
-                  fontSize: 10,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  transition: "all 0.15s",
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.borderColor = COLORS.green;
-                  e.currentTarget.style.background = "rgba(16,185,129,0.06)";
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.borderColor = COLORS.border;
-                  e.currentTarget.style.background = COLORS.surface;
-                }}
               >
-                <span style={{ fontSize: 16 }}>🎨</span>
-                <span>Import SVG Path Vector</span>
-              </button>
-              <div style={{ fontSize: 8, color: COLORS.muted, textAlign: "center", marginTop: 2 }}>
-                Vector lines are analyzed and drawn one-by-one by the hand cursor.
+                <span style={{ color: isDragOver ? C.accent : C.textMuted, display: "flex" }}><UploadIcon /></span>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: C.text, fontWeight: 600 }}>Drop files here</div>
+                  <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>SVG vectors or raster images</div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={e => { e.stopPropagation(); svgFileRef.current?.click(); }} style={{ padding: "4px 10px", borderRadius: 5, fontSize: 9, fontWeight: 600, border: `1px solid ${C.border}`, background: C.surfaceHi, color: C.text, cursor: "pointer" }}>SVG Vector</button>
+                  <button onClick={e => { e.stopPropagation(); fileRef.current?.click(); }} style={{ padding: "4px 10px", borderRadius: 5, fontSize: 9, fontWeight: 600, border: `1px solid ${C.border}`, background: C.surfaceHi, color: C.text, cursor: "pointer" }}>Image</button>
+                </div>
+                <input ref={svgFileRef} type="file" accept=".svg,image/svg+xml" style={{ display: "none" }} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
+                <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
               </div>
             </div>
-          </div>
+
+            {/* ── Paste Code / URL / Text Option (Always Open/Visible) ── */}
+            <div>
+              <button
+                onClick={() => setShowPasteBox(o => !o)}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "6px 10px", borderRadius: 6, border: `1px solid ${C.border}`,
+                  background: showPasteBox ? C.accentDim : "rgba(255,255,255,0.01)",
+                  color: showPasteBox ? C.accent : C.text, cursor: "pointer",
+                  fontSize: 10, fontWeight: 600, transition: "all 0.15s",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                    <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+                  </svg>
+                  Paste & Import Anything
+                </span>
+                <svg
+                  width="9"
+                  height="9"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  style={{ transform: showPasteBox ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.15s", opacity: 0.6 }}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              {showPasteBox && (
+                <div style={{
+                  marginTop: 6, display: "flex", flexDirection: "column", gap: 6,
+                  padding: 8, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface,
+                }}>
+                  <textarea
+                    placeholder="Paste anything here: raw SVG vector code, image URLs (PNG, JPG, SVG), Base64 data URLs, or plain text to write on screen..."
+                    value={pastedSvgCode}
+                    onChange={e => setPastedSvgCode(e.target.value)}
+                    style={{
+                      width: "100%", height: 74, padding: 6, borderRadius: 5, border: `1px solid ${C.border}`,
+                      background: C.dimmer, color: C.text, fontSize: 9, fontFamily: "monospace",
+                      outline: "none", resize: "none", boxSizing: "border-box", lineHeight: 1.3,
+                    }}
+                  />
+                  <button
+                    disabled={!pastedSvgCode.trim()}
+                    onClick={() => {
+                      if (!pastedSvgCode.trim()) return;
+                      handleUniversalImport(pastedSvgCode);
+                      setPastedSvgCode("");
+                      setShowPasteBox(false);
+                    }}
+                    style={{
+                      width: "100%", padding: "5px 10px", borderRadius: 5, fontSize: 10, fontWeight: 700,
+                      border: "none", background: pastedSvgCode.trim() ? C.accent : C.border,
+                      color: pastedSvgCode.trim() ? "#fff" : C.textMuted,
+                      cursor: pastedSvgCode.trim() ? "pointer" : "default",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    Import Pasted Asset
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* ── Online Icon Search (Always Open/Visible) ── */}
+            <div>
+              <span style={sectionLabel}>🔍 Search Online Icons</span>
+              <form onSubmit={handleSearch} style={{ display: "flex", gap: 5, marginTop: 5 }}>
+                <div style={{ flex: 1, position: "relative", display: "flex", alignItems: "center" }}>
+                  <span style={{ position: "absolute", left: 7, color: C.textMuted, display: "flex" }}>
+                    <SearchIcon />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="e.g. coffee, house, user…"
+                    value={searchQuery}
+                    onChange={e => { setSearchQuery(e.target.value); if (!e.target.value) setSearchResults([]); }}
+                    style={{
+                      width: "100%", padding: "6px 8px 6px 26px",
+                      borderRadius: 6, border: `1px solid ${C.border}`,
+                      background: C.dimmer, color: C.text, fontSize: 11,
+                      outline: "none", boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+                <button type="submit" disabled={loadingSearch} style={{
+                  padding: "0 10px", borderRadius: 6,
+                  background: C.accent, color: "#08080a", border: "none",
+                  cursor: "pointer", fontSize: 10, fontWeight: "bold",
+                  opacity: loadingSearch ? 0.6 : 1,
+                }}>
+                  {loadingSearch ? "…" : "Go"}
+                </button>
+              </form>
+              {showSearchResults && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 4, marginTop: 6 }}>
+                  {searchResults.map(icon => {
+                    const isImp = importingIcon === icon.rawName;
+                    return (
+                      <button
+                        key={icon.rawName}
+                        title={icon.name}
+                        onClick={() => selectOnlineIcon(icon)}
+                        disabled={!!importingIcon}
+                        draggable={true}
+                        onDragStart={e => {
+                          e.dataTransfer.setData("application/json", JSON.stringify({
+                            type: "icon",
+                            name: icon.name,
+                            svgUrl: icon.url,
+                          }));
+                        }}
+                        style={{ ...gridCard, height: 40, padding: 4, cursor: "grab" }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.background = C.accentDim; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.border;  e.currentTarget.style.background = C.surface; }}
+                      >
+                        {isImp
+                          ? <span style={{ color: C.accent, fontSize: 11, fontWeight: "bold" }}>↓</span>
+                          : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}><SvgPreview src={icon.url} /></div>
+                        }
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* ── Scribe Math Equations (LaTeX to Animating Vector SVG) ── */}
+            <div>
+              <span style={sectionLabel}>📐 Animating Math Equations</span>
+              <div
+                style={{
+                  marginTop: 5,
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: `1px solid ${C.border}`,
+                  background: C.surface,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <label style={{ fontSize: 9, color: C.textMuted, fontWeight: "bold" }}>TYPE LATEX FORMULA:</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. e^{i\pi} + 1 = 0 or \int_{a}^{b} x^2 dx"
+                    value={latexInput}
+                    onChange={e => {
+                      setLatexInput(e.target.value);
+                      setLatexPreviewUrl("");
+                    }}
+                    style={{
+                      width: "100%", padding: "7px 9px",
+                      borderRadius: 6, border: `1px solid ${C.border}`,
+                      background: C.dimmer, color: C.text, fontSize: 11,
+                      outline: "none", boxSizing: "border-box", fontFamily: "monospace",
+                    }}
+                  />
+                </div>
+
+                {/* Formula Quick Presets */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {[
+                    { label: "Pythagorean", code: "a^2 + b^2 = c^2" },
+                    { label: "Euler", code: "e^{i\\pi} + 1 = 0" },
+                    { label: "Relativity", code: "E = mc^2" },
+                    { label: "Quadratic", code: "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}" },
+                    { label: "Integral", code: "\\int x^n dx = \\frac{x^{n+1}}{n+1}" },
+                  ].map(p => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => {
+                        setLatexInput(p.code);
+                        setLatexPreviewUrl("");
+                      }}
+                      style={{
+                        padding: "3px 6px", borderRadius: 4, fontSize: 8, fontWeight: 700,
+                        background: "rgba(255,255,255,0.03)", border: `1px solid ${C.border}`,
+                        color: C.textMuted, cursor: "pointer", transition: "all 0.15s",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.color = C.accent; e.currentTarget.style.borderColor = C.borderHi; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = C.textMuted; e.currentTarget.style.borderColor = C.border; }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Preview & Draw Controls */}
+                {latexInput.trim() && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                    <button
+                      onClick={async () => {
+                        const url = `https://math.vercel.app/?from=${encodeURIComponent(latexInput)}&color=white`;
+                        setLatexPreviewUrl(url);
+                      }}
+                      style={{
+                        flex: 1, padding: "5px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                        border: `1px solid ${C.border}`, background: C.surfaceHi, color: C.text, cursor: "pointer",
+                      }}
+                    >
+                      Preview Formula
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        const formula = latexInput.trim();
+                        if (!formula) return;
+                        setLoadingFormula(true);
+                        try {
+                          const url = `https://math.vercel.app/?from=${encodeURIComponent(formula)}&color=black`;
+                          const res = await fetch(url);
+                          const text = await res.text();
+                          
+                          // Insert the math formula SVG!
+                          parseAndInsertSvgText(text, { pendingSave: true, filename: `Formula: ${formula}` });
+                          setLatexInput("");
+                          setLatexPreviewUrl("");
+                        } catch {
+                          alert("Failed to render the math equation. Please check your LaTeX syntax.");
+                        } finally {
+                          setLoadingFormula(false);
+                        }
+                      }}
+                      disabled={loadingFormula}
+                      style={{
+                        flex: 1, padding: "5px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                        border: "none", background: C.accent, color: "#000", cursor: "pointer",
+                        opacity: loadingFormula ? 0.6 : 1,
+                      }}
+                    >
+                      {loadingFormula ? "Drawing..." : "Draw Equation"}
+                    </button>
+                  </div>
+                )}
+
+                {/* Math Equation Live Preview Container */}
+                {latexPreviewUrl && (
+                  <div
+                    draggable={true}
+                    onDragStart={e => {
+                      e.dataTransfer.setData("application/json", JSON.stringify({
+                        type: "icon",
+                        name: `Math: ${latexInput}`,
+                        svgUrl: `https://math.vercel.app/?from=${encodeURIComponent(latexInput)}&color=black`,
+                      }));
+                    }}
+                    title="Drag this formula onto the canvas!"
+                    style={{
+                      borderRadius: 8, border: `1px solid ${C.border}`,
+                      background: "rgba(0,0,0,0.15)", padding: "12px",
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                      minHeight: 50, cursor: "grab", transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
+                  >
+                    <img
+                      src={latexPreviewUrl}
+                      alt="LaTeX Preview"
+                      style={{ maxWidth: "100%", maxHeight: 60, objectFit: "contain" }}
+                    />
+                    <span style={{ fontSize: 7, color: C.textMuted, marginTop: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                      ↔️ Drag Formula to Canvas
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+
+            {/* Shapes & DB sections moved to bottom container */}
+          </>
         )}
 
-        {/* ── TAB: HANDS STYLES ── */}
+        {/* ══════════════ HANDS TAB ══════════════ */}
         {activeTab === "hands" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ fontSize: 9, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>
-              Whiteboard Drawing Hand Styles
-            </div>
-            
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+          <>
+            <div style={sectionLabel}>Drawing Hand Styles</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
               {HAND_STYLES.map(h => {
                 const active = currentHand === h.src;
                 return (
@@ -1196,39 +1690,18 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
                     key={h.id}
                     onClick={() => onHandChange(h.src)}
                     style={{
-                      borderRadius: 8,
-                      border: `2px solid ${active ? COLORS.accent : COLORS.border}`,
-                      background: active ? COLORS.accentDim : COLORS.surface,
-                      cursor: "pointer",
-                      padding: 6,
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      gap: 4,
-                      boxShadow: "0 2px 5px rgba(0,0,0,0.15)",
+                      borderRadius: 10,
+                      border: `2px solid ${active ? C.accent : C.border}`,
+                      background: active ? C.accentDim : C.surface,
+                      cursor: "pointer", padding: 8,
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                       transition: "all 0.15s",
                     }}
-                    onMouseEnter={e => {
-                      if (!active) e.currentTarget.style.borderColor = COLORS.accent;
-                    }}
-                    onMouseLeave={e => {
-                      if (!active) e.currentTarget.style.borderColor = COLORS.border;
-                    }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.borderColor = C.accent; }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.borderColor = C.border; }}
                   >
-                    <img
-                      src={h.src}
-                      alt={h.label}
-                      style={{
-                        width: "100%",
-                        height: 50,
-                        objectFit: "contain",
-                        borderRadius: 4,
-                        background: "rgba(255,255,255,0.02)",
-                      }}
-                    />
-                    <span style={{ fontSize: 8, color: active ? COLORS.accent : COLORS.text, fontWeight: active ? "bold" : "normal" }}>
-                      {h.label}
-                    </span>
+                    <img src={h.src} alt={h.label} style={{ width: "100%", height: 54, objectFit: "contain", borderRadius: 5, background: "rgba(255,255,255,0.02)" }} />
+                    <span style={{ fontSize: 9, color: active ? C.accent : C.text, fontWeight: active ? 700 : 400 }}>{h.label}</span>
                   </button>
                 );
               })}
@@ -1238,31 +1711,15 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
               <button
                 onClick={() => setIsCalibratorOpen(true)}
                 style={{
-                  marginTop: 8,
-                  padding: "8px 12px",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  fontWeight: "bold",
-                  border: `1px solid ${COLORS.accent}`,
-                  background: COLORS.accentDim,
-                  color: COLORS.accent,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 4,
+                  marginTop: 6, padding: "9px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600,
+                  border: `1px solid ${C.accent}`, background: C.accentDim, color: C.accent,
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                   transition: "background 0.2s, color 0.2s",
                 }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.background = COLORS.accent;
-                  e.currentTarget.style.color = "#fff";
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.background = COLORS.accentDim;
-                  e.currentTarget.style.color = COLORS.accent;
-                }}
+                onMouseEnter={e => { e.currentTarget.style.background = C.accent; e.currentTarget.style.color = "#fff"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = C.accentDim; e.currentTarget.style.color = C.accent; }}
               >
-                ✋ Calibrate Stylus tip...
+                <StylusIcon /> Calibrate Stylus Tip
               </button>
             )}
 
@@ -1271,10 +1728,277 @@ export function AssetLibrary({ onHandChange, currentHand, getViewportCenter }: A
               onClose={() => setIsCalibratorOpen(false)}
               handSrc={currentHand}
             />
-          </div>
+          </>
         )}
 
       </div>
+
+      {/* ── Docked Bottom Accordion Area (Shapes & DB Libraries with Slide Effect) ── */}
+      {activeTab === "library" && (
+        <div style={{ borderTop: `1px solid ${C.border}`, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          {/* ── Shapes Library accordion ── */}
+          <div>
+            <button
+              onClick={() => {
+                setShowShapesLibrary(o => !o);
+                if (!showShapesLibrary) {
+                  setShowDbLibrary(false);
+                }
+              }}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+                border: "none",
+                borderBottom: `1px solid ${C.border}`,
+                background: showShapesLibrary ? C.accentDim : "transparent",
+                color: C.text,
+                cursor: "pointer",
+                fontSize: "10px",
+                fontWeight: "bold",
+                transition: "all 0.2s ease-in-out",
+                boxSizing: "border-box",
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                </svg>
+                <span>Shapes Library</span>
+              </span>
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={showShapesLibrary ? C.accent : C.textMuted}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                style={{ transform: showShapesLibrary ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s ease" }}
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+
+            <div
+              style={{
+                maxHeight: showShapesLibrary ? "180px" : "0px",
+                opacity: showShapesLibrary ? 1 : 0,
+                overflowY: "auto",
+                transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 6,
+                padding: showShapesLibrary ? "8px" : "0px 8px",
+                boxSizing: "border-box",
+              }}
+            >
+              {SHAPE_ENTRIES.map(shape => (
+                <div
+                  key={shape.id}
+                  onClick={() => handleSelectAsset(shape)}
+                  draggable={true}
+                  onDragStart={e => {
+                    e.dataTransfer.setData("application/json", JSON.stringify({
+                      type: "shape",
+                      name: shape.name,
+                      pathData: shape.pathData,
+                    }));
+                  }}
+                  title={shape.name}
+                  style={{
+                    borderRadius: 8,
+                    border: `1px solid ${C.border}`,
+                    background: C.bg,
+                    cursor: "grab",
+                    padding: 6,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 4,
+                    transition: "all 0.15s ease",
+                    position: "relative",
+                    overflow: "hidden",
+                    height: 64,
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = C.accent;
+                    e.currentTarget.style.background = C.surfaceHi;
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = C.border;
+                    e.currentTarget.style.background = C.bg;
+                  }}
+                >
+                  <div style={{ width: "100%", height: 36, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                    <ShapePreview pathData={shape.pathData} stroke={C.accent} />
+                  </div>
+                  <div style={{ fontSize: 8, color: C.textMuted, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textTransform: "capitalize" }}>
+                    {shape.name}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Saved Cloud Assets Section ── */}
+          {cloudAssets.length > 0 && (
+            <div style={{ borderTop: `1px solid ${C.border}` }}>
+              <button
+                onClick={() => {
+                  setShowDbLibrary(o => !o);
+                  if (!showDbLibrary) {
+                    setShowShapesLibrary(false);
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 12px",
+                  border: "none",
+                  borderBottom: `1px solid ${C.border}`,
+                  background: showDbLibrary ? C.accentDim : "transparent",
+                  color: C.text,
+                  cursor: "pointer",
+                  fontSize: "10px",
+                  fontWeight: "bold",
+                  transition: "all 0.2s ease-in-out",
+                  boxSizing: "border-box",
+                }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
+                  </svg>
+                  <span>Saved Cloud Assets</span>
+                </span>
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={showDbLibrary ? C.accent : C.textMuted}
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  style={{ transform: showDbLibrary ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s ease" }}
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              <div
+                style={{
+                  maxHeight: showDbLibrary ? "180px" : "0px",
+                  opacity: showDbLibrary ? 1 : 0,
+                  overflowY: "auto",
+                  transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 1fr)",
+                  gap: 6,
+                  padding: showDbLibrary ? "8px" : "0px 8px",
+                  boxSizing: "border-box",
+                }}
+              >
+                {cloudAssets.map(asset => {
+                  const isImg = asset.type === "image" || asset.pathData.startsWith("data:image/");
+                  return (
+                    <div
+                      key={asset.id}
+                      onClick={() => handleSelectAsset({ ...asset, type: "cloud" })}
+                      draggable={true}
+                      onDragStart={e => {
+                        e.dataTransfer.setData("application/json", JSON.stringify({
+                          type: "cloud",
+                          name: asset.name,
+                          pathData: asset.pathData,
+                          subPaths: asset.subPaths,
+                          cloudAssetType: asset.type,
+                        }));
+                      }}
+                      title={asset.name}
+                      style={{
+                        borderRadius: 8,
+                        border: `1px solid ${C.border}`,
+                        background: C.bg,
+                        cursor: "grab",
+                        padding: 6,
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 4,
+                        transition: "all 0.15s ease",
+                        position: "relative",
+                        overflow: "hidden",
+                        height: 64,
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.borderColor = C.accent;
+                        e.currentTarget.style.background = C.surfaceHi;
+                        const trashBtn = e.currentTarget.querySelector(".trash-btn") as HTMLElement;
+                        if (trashBtn) trashBtn.style.opacity = "1";
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.borderColor = C.border;
+                        e.currentTarget.style.background = C.bg;
+                        const trashBtn = e.currentTarget.querySelector(".trash-btn") as HTMLElement;
+                        if (trashBtn) trashBtn.style.opacity = "0";
+                      }}
+                    >
+                      <div style={{ width: "100%", height: 36, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                        {isImg ? (
+                          <img src={asset.pathData} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                        ) : (
+                          <ShapePreview pathData={asset.pathData} stroke={C.accent} />
+                        )}
+                      </div>
+                      <div style={{ fontSize: 8, color: C.textMuted, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "center", textTransform: "capitalize" }}>
+                        {asset.name}
+                      </div>
+                      {(asset.isCustom || !asset.id.startsWith("seeded-")) && (
+                        <button
+                          className="trash-btn"
+                          onClick={e => {
+                            e.stopPropagation();
+                            deleteCloudAsset(asset.id, asset.name);
+                          }}
+                          title="Delete from database"
+                          style={{
+                            position: "absolute",
+                            top: 4,
+                            right: 4,
+                            background: C.redDim,
+                            border: `1px solid ${C.red}`,
+                            borderRadius: 4,
+                            width: 14,
+                            height: 14,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: C.red,
+                            cursor: "pointer",
+                            padding: 0,
+                            zIndex: 10,
+                            opacity: 0,
+                            transition: "opacity 0.15s ease",
+                          }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

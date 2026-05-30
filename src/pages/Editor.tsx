@@ -32,19 +32,63 @@ import type { ExportFormat, ExportProgress as FFmpegProgress } from "../core/ffm
 import { screenToWorld, hitTestScene, getAnimatedObjectBBox, getSvgObjectBBox, snapXY, snapToObjects, getObjectCenter } from "../core/hitTest";
 import { TimelinePanel } from "../components/TimelinePanel";
 import { ScenePanel } from "../components/ScenePanel";
-import { AssetLibrary } from "../components/AssetLibrary";
+import { AssetLibrary, _circleToPath, _ellipseToPath, _rectToPath, _lineToPath, _polyToPath, _elementToPathData, _resolveAttr } from "../components/AssetLibrary";
 import { AiPanel } from "../components/AiPanel";
 import { PropertyInspector } from "../components/PropertyInspector";
 import type { AnimatedObject } from "../core/timeline";
+import { SvgEasing, getPathDrawDuration, splitCompoundPath } from "../core/svgPath";
 import type { SvgPathObject } from "../core/svgPath";
 import { getValuesAtTime, newKfId } from "../core/transformInterpolator";
 import { AudioSynchronizer } from "../components/AudioSynchronizer";
+import { AudioLibrary } from "../components/AudioLibrary";
 
 
 const PAN_SPEED        = 8;
 const KEY_ZOOM_STEP    = 0.05;
 const WHEEL_SENSITIVITY = 0.001;
 const PINCH_SENSITIVITY = 0.005;
+
+// ── Tab Icons ─────────────────────────────────────────────────────────────────
+const InspectIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+);
+
+const ArtIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"/>
+    <path d="M7.5 10.5C8.32843 10.5 9 9.82843 9 9C9 8.17157 8.32843 7.5 7.5 7.5C6.67157 7.5 6 8.17157 6 9C6 9.82843 6.67157 10.5 7.5 10.5Z"/>
+    <path d="M11.5 7.5C12.3284 7.5 13 6.82843 13 6C13 5.17157 12.3284 4.5 11.5 4.5C10.6716 4.5 10 5.17157 10 6C10 6.82843 10.6716 7.5 11.5 7.5Z"/>
+    <path d="M16.5 9.5C17.3284 9.5 18 8.82843 18 8C18 7.17157 17.3284 6.5 16.5 6.5C15.6716 6.5 15 7.17157 15 8C15 8.82843 15.6716 9.5 16.5 9.5Z"/>
+    <path d="M6 14C6 16.2091 8.68629 18 12 18C15.3137 18 18 16.2091 18 14" strokeLinecap="round"/>
+  </svg>
+);
+
+const ScenesIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+    <line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/>
+    <line x1="2" y1="12" x2="22" y2="12"/>
+    <line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/>
+    <line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/>
+  </svg>
+);
+
+const AiIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+  </svg>
+);
+
+const AudioIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 18V5l12-2v13M9 9l12-2" />
+    <circle cx="6" cy="18" r="3" />
+    <circle cx="18" cy="16" r="3" />
+  </svg>
+);
 
 // ── Toolbar items ─────────────────────────────────────────────────────────────
 
@@ -60,14 +104,14 @@ const TOOLBAR_ITEMS: { mode: CursorMode; icon: string; label: string }[] = [
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const COLORS = {
-  bg:       "#0c1117",
-  surface:  "#141920",
-  border:   "rgba(99,102,241,0.18)",
-  accent:   "#6366f1",
-  accentDim:"rgba(99,102,241,0.12)",
-  text:     "#e2e8f0",
-  muted:    "#64748b",
-  dimmer:   "#1e2530",
+  bg:       "#121214",          // Premium warm charcoal slate
+  surface:  "#1a1a1e",          // Dark graphite carbon panel
+  border:   "rgba(255,255,255,0.08)", // Subtle translucent silver border
+  accent:   "#ffffff",          // Pristine white accent
+  accentDim:"rgba(255,255,255,0.06)",  // Translucent active hover highlight
+  text:     "#f4f4f5",          // Crisp matte silver text
+  muted:    "#8e8e93",          // Softer zinc-grey
+  dimmer:   "#222226",          // Graphite card background
 };
 
 const panel: React.CSSProperties = {
@@ -146,29 +190,7 @@ export default function Editor() {
   const navigate = useNavigate();
 
   const [totalDuration, setTotalDuration] = useState(sceneStore.totalDuration);
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [renameVal, setRenameVal] = useState("");
-  const formatDuration = (secNum: number) => {
-    const m = Math.floor(secNum / 60).toString().padStart(2, "0");
-    const s = Math.floor(secNum % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
-  };
 
-  const formatRelativeTime = (dateStr: string) => {
-    try {
-      const diff = Date.now() - new Date(dateStr).getTime();
-      const mins = Math.floor(diff / 60000);
-      if (mins < 1) return "just now";
-      if (mins < 60) return `${mins}m ago`;
-      const hrs = Math.floor(mins / 60);
-      if (hrs < 24) return `${hrs}h ago`;
-      const days = Math.floor(hrs / 24);
-      if (days === 1) return "yesterday";
-      return `${days}d ago`;
-    } catch {
-      return "recently";
-    }
-  };
 
   const canvasRef  = useRef<HTMLCanvasElement>(null);
   const cameraRef  = useRef<Camera>(createCamera());
@@ -204,7 +226,7 @@ export default function Editor() {
   });
 
   const [handSrc,  setHandSrc]  = useState("/handimg1.png");
-  const [rightTab, setRightTab] = useState<"properties" | "assets" | "scenes" | "ai">("properties");
+  const [rightTab, setRightTab] = useState<"properties" | "assets" | "scenes" | "ai" | "audio">("properties");
 
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
   const isResizingRightRef = useRef(false);
@@ -470,6 +492,219 @@ export default function Editor() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isTheaterMode]);
 
+  // Coordinate-aware custom SVG dropper
+  const parseAndInsertSvgTextAtCoords = useCallback((text: string, dropX: number, dropY: number, filename?: string) => {
+    const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+    if (!scene) return;
+
+    let cleanText = text.trim();
+    cleanText = cleanText.replace(/^```[a-zA-Z]*\n?/, "");
+    cleanText = cleanText.replace(/```$/, "");
+    cleanText = cleanText.trim();
+
+    const lowerText = cleanText.toLowerCase();
+    const startIdx = lowerText.indexOf("<svg");
+    if (startIdx !== -1) {
+      const endIdx = lowerText.lastIndexOf("</svg>");
+      if (endIdx !== -1) {
+        cleanText = cleanText.substring(startIdx, endIdx + 6);
+      } else {
+        cleanText = cleanText.substring(startIdx) + "\n</svg>";
+      }
+    }
+
+    const parser  = new DOMParser();
+    let doc       = parser.parseFromString(cleanText, "image/svg+xml");
+
+    const parseError = doc.querySelector("parsererror");
+    const DRAWABLE_NAMES = new Set(["path", "circle", "ellipse", "rect", "line", "polygon", "polyline"]);
+    let allElements = Array.from(doc.getElementsByTagName("*"));
+    let elements = allElements.filter(el => DRAWABLE_NAMES.has(el.localName.toLowerCase()));
+
+    if (parseError || elements.length === 0) {
+      doc = parser.parseFromString(cleanText, "text/html");
+      allElements = Array.from(doc.getElementsByTagName("*"));
+      elements = allElements.filter(el => DRAWABLE_NAMES.has(el.localName.toLowerCase()));
+    }
+
+    const svgEl = doc.querySelector("svg") || allElements.find(el => el.localName.toLowerCase() === "svg") || null;
+
+    if (elements.length === 0) {
+      alert("No drawable vector elements found.");
+      return;
+    }
+
+    let vbW = 100, vbH = 100;
+    const vb = svgEl?.getAttribute("viewBox");
+    if (vb) {
+      const parts = vb.trim().split(/[\s,]+/).map(Number);
+      if (parts.length === 4) { vbW = parts[2]; vbH = parts[3]; }
+    }
+    if (!vb && svgEl) {
+      const w = parseFloat(svgEl.getAttribute("width") ?? "0");
+      const h = parseFloat(svgEl.getAttribute("height") ?? "0");
+      if (w > 0 && h > 0) { vbW = w; vbH = h; }
+    }
+
+    const TARGET = 150;
+    const scale  = Math.min(TARGET / Math.max(vbW, 1), TARGET / Math.max(vbH, 1));
+    const offsetX = -(vbW * scale) / 2;
+    const offsetY = -(vbH * scale) / 2;
+    const MICRO_PAUSE = 0.08;
+    const localTime   = sceneStore.getLocalTime();
+    const groupId     = `svg-group-${Date.now()}`;
+    let cursor        = localTime;
+    let insertCount   = 0;
+
+    const hasAnyStroke = elements.some(el => {
+      const s = _resolveAttr(el, "stroke");
+      return s && s !== "none";
+    });
+
+    const getCombinedTransform = (el: Element) => {
+      let x = 0, y = 0, scaleX = 1, scaleY = 1;
+      let node: Element | null = el;
+      while (node) {
+        const transform = node.getAttribute("transform");
+        if (transform) {
+          const translateMatch = transform.match(/translate\(\s*(-?\d+\.?\d*)\s*[, ]?\s*(-?\d+\.?\d*)?\s*\)/);
+          if (translateMatch) {
+            x += parseFloat(translateMatch[1]);
+            y += parseFloat(translateMatch[2] ?? "0");
+          }
+          const scaleMatch = transform.match(/scale\(\s*(-?\d+\.?\d*)\s*[, ]?\s*(-?\d+\.?\d*)?\s*\)/);
+          if (scaleMatch) {
+            const sx = parseFloat(scaleMatch[1]);
+            const sy = parseFloat(scaleMatch[2] ?? scaleMatch[1]);
+            scaleX *= sx;
+            scaleY *= sy;
+          }
+        }
+        node = node.parentElement;
+      }
+      return { x, y, scaleX, scaleY };
+    };
+
+    elements.forEach((el, i) => {
+      let parent = el.parentElement;
+      let isUtility = false;
+      while (parent) {
+        const tag = parent.tagName.toLowerCase();
+        if (tag === "defs" || tag === "clippath" || tag === "mask" || tag === "metadata") {
+          isUtility = true;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      if (isUtility) return;
+
+      const d = _elementToPathData(el);
+      if (!d || !d.trim()) return;
+
+      const stroke  = _resolveAttr(el, "stroke") ?? "none";
+      const fill    = _resolveAttr(el, "fill")   ?? "none";
+
+      if (el.tagName.toLowerCase() === "rect") {
+        const w = parseFloat(el.getAttribute("width") ?? "0");
+        const h = parseFloat(el.getAttribute("height") ?? "0");
+        if ((Math.abs(w - vbW) < 2 && Math.abs(h - vbH) < 2) || (stroke === "none" && fill === "none")) {
+          return;
+        }
+      }
+
+      const { x: tX, y: tY, scaleX: tSX, scaleY: tSY } = getCombinedTransform(el);
+      const finalX = dropX + offsetX + tX * scale;
+      const finalY = dropY + offsetY + tY * scale;
+      const finalScaleX = scale * tSX;
+      const finalScaleY = scale * tSY;
+
+      const sw      = parseFloat(_resolveAttr(el, "stroke-width") ?? "2") * finalScaleX;
+      const opacity = parseFloat(_resolveAttr(el, "opacity") ?? "1");
+      const duration = getPathDrawDuration(d);
+      const baseId   = `svg-import-${groupId}-${i}`;
+      const subPaths = splitCompoundPath(d);
+      const hasSubPaths = subPaths.length > 1;
+      const hasStroke = stroke !== "none";
+      const hasFill   = fill   !== "none";
+
+      if (hasStroke && hasFill) {
+        const strokeDur = duration * 0.7;
+        const fillDur   = duration * 0.5;
+        sceneStore.addSvgObject(scene.id, {
+          id: `${baseId}-stroke`, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke, strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: undefined, startTime: cursor, duration: strokeDur,
+          easing: SvgEasing.easeOut, drawOrder: i * 2,
+          subPaths: hasSubPaths ? subPaths : undefined, handVisible: true,
+          opacity: opacity < 1 ? opacity : undefined, drawMode: "stroke",
+        });
+        cursor += strokeDur;
+        sceneStore.addSvgObject(scene.id, {
+          id: `${baseId}-fill`, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: "none", strokeWidth: 0, fillColor: fill,
+          startTime: cursor, duration: fillDur, easing: SvgEasing.easeOut,
+          drawOrder: i * 2 + 1, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode: "fill",
+        });
+        cursor += fillDur + MICRO_PAUSE;
+        insertCount += 2;
+      } else if (hasStroke) {
+        sceneStore.addSvgObject(scene.id, {
+          id: baseId, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke, strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: undefined, startTime: cursor, duration, easing: SvgEasing.easeOut,
+          drawOrder: i * 2, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode: "stroke",
+        });
+        cursor += duration + MICRO_PAUSE;
+        insertCount++;
+      } else {
+        const drawMode = hasAnyStroke ? "fill" : "stroke";
+        sceneStore.addSvgObject(scene.id, {
+          id: baseId, groupId, pathData: d,
+          x: finalX, y: finalY, scaleX: finalScaleX, scaleY: finalScaleY,
+          strokeColor: stroke === "none" ? "#1e293b" : stroke,
+          strokeWidth: Math.max(1, isNaN(sw) ? 2 : sw),
+          fillColor: fill === "none" ? undefined : fill,
+          startTime: cursor, duration: fillDur || duration, easing: SvgEasing.easeOut,
+          drawOrder: i * 2, subPaths: hasSubPaths ? subPaths : undefined,
+          handVisible: true, opacity: opacity < 1 ? opacity : undefined, drawMode,
+        });
+        cursor += duration + MICRO_PAUSE;
+        insertCount++;
+      }
+    });
+
+    if (insertCount > 0) {
+      editorStore.setMode("select");
+
+      try {
+        const recentSaved = localStorage.getItem("scribe_flow_recent_assets");
+        const recent = recentSaved ? JSON.parse(recentSaved) : [];
+        const assetId = `local-${Date.now()}`;
+        const combinedPathData = elements.map(el => _elementToPathData(el)).filter(Boolean).join(" ");
+
+        const filtered = recent.filter((x: any) => x.name !== (filename ?? "Dropped SVG"));
+        localStorage.setItem("scribe_flow_recent_assets", JSON.stringify([
+          {
+            id: assetId,
+            name: filename ?? "Dropped SVG",
+            type: "svg",
+            pathData: combinedPathData,
+            pendingSave: true,
+            svgText: text,
+          },
+          ...filtered,
+        ].slice(0, 12)));
+
+        window.dispatchEvent(new Event("scribe_recent_assets_update"));
+      } catch {}
+    }
+  }, []);
+
   // ── UI state ──────────────────────────────────────────────────────────────
   const [isPlaying,    setIsPlaying]    = useState(false);
   const [currentTime,  setCurrentTime]  = useState(0);
@@ -491,6 +726,58 @@ export default function Editor() {
   const [exportProgress,  setExportProgress]  = useState<ExportProgress | null>(null);
   const [exportFormat]                        = useState<ExportFormat>("mp4");
   const [ffmpegProgress,  setFfmpegProgress]   = useState<FFmpegProgress | null>(null);
+
+  // Instant creation helpers
+  const addRectangleInstantly = useCallback(() => {
+    const newId = `rect-${Date.now()}`;
+    const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+    if (scene) {
+      const cx = cameraRef.current.x;
+      const cy = cameraRef.current.y;
+      sceneStore.addObject(scene.id, {
+        id: newId,
+        type: "rect",
+        x: cx - 60,
+        y: cy - 40,
+        width: 120,
+        height: 80,
+        fillColor: "transparent",
+        strokeColor: "#ffffff",
+        strokeWidth: 3,
+        startTime: sceneStore.getLocalTime(),
+        duration: 1.5,
+        animationType: "draw",
+        easing: "easeInOut",
+      });
+      editorStore.select(newId, "animated");
+      editorStore.setMode("select");
+    }
+  }, []);
+
+  const addCircleInstantly = useCallback(() => {
+    const newId = `circle-${Date.now()}`;
+    const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+    if (scene) {
+      const cx = cameraRef.current.x;
+      const cy = cameraRef.current.y;
+      sceneStore.addObject(scene.id, {
+        id: newId,
+        type: "circle",
+        x: cx,
+        y: cy,
+        radius: 50,
+        fillColor: "transparent",
+        strokeColor: "#ffffff",
+        strokeWidth: 3,
+        startTime: sceneStore.getLocalTime(),
+        duration: 1.5,
+        animationType: "draw",
+        easing: "easeInOut",
+      });
+      editorStore.select(newId, "animated");
+      editorStore.setMode("select");
+    }
+  }, []);
 
   // ── Subscribe to stores ───────────────────────────────────────────────────
   useEffect(() => {
@@ -1488,8 +1775,6 @@ export default function Editor() {
     }
   }, []);
 
-  const activeProjId = sceneStore.getCurrentProjectId();
-
   // ── Layout ────────────────────────────────────────────────────────────────
   if (isRenderMode) {
     return (
@@ -1530,49 +1815,14 @@ export default function Editor() {
   }
 
   return (
-    <div style={{ display: "flex", width: "100vw", height: "100vh", background: COLORS.bg, overflow: "hidden", fontFamily: "monospace" }}>
+    <div style={{ display: "flex", width: "100vw", height: "100vh", background: COLORS.bg, overflow: "hidden", fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>
       {/* Logical audio element sync engine */}
       <AudioSynchronizer currentTime={currentTime} isPlaying={isPlaying} />
-
-      {/* ── LEFT TOOLBAR ─────────────────────────────────────────────────── */}
-      {!isTheaterMode && (
-        <div style={{ ...panel, width: 56, alignItems: "center", gap: 4, padding: "12px 0", borderRight: `1px solid ${COLORS.border}`, userSelect: "none" }}>
-          {/* Logo */}
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: COLORS.accent, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, fontSize: 16 }}>
-            ✦
-          </div>
-
-          <div style={{ width: "100%", height: 1, background: COLORS.border, marginBottom: 8 }} />
-
-          {TOOLBAR_ITEMS.map(item => {
-            const active = editorState.cursorMode === item.mode;
-            return (
-              <button
-                key={item.mode}
-                title={item.label}
-                onClick={() => editorStore.setMode(item.mode)}
-                style={{
-                  width: 40, height: 40, borderRadius: 8,
-                  border: active ? `1px solid ${COLORS.accent}` : "1px solid transparent",
-                  background: active ? COLORS.accentDim : "transparent",
-                  color: active ? COLORS.accent : COLORS.muted,
-                  cursor: "pointer", fontSize: 16,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  transition: "all 0.15s",
-                }}
-              >
-                {item.icon}
-              </button>
-            );
-          })}
-
-        </div>
-      )}
 
       {/* ── CANVAS ───────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden", minWidth: 0 }}>
 
-        {/* Small dot button — click to go back to Dashboard */}
+        {/* Sleek dashboard back button */}
         {!isTheaterMode && (
           <button
             onClick={() => navigate("/dashboard")}
@@ -1581,30 +1831,217 @@ export default function Editor() {
               position: "absolute",
               top: 16,
               left: 16,
-              width: 28,
-              height: 28,
-              borderRadius: "50%",
-              background: COLORS.accent,
-              border: "none",
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "rgba(26, 26, 30, 0.75)",
+              backdropFilter: "blur(12px)",
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.text,
               cursor: "pointer",
               zIndex: 1000,
-              boxShadow: "0 2px 12px rgba(99,102,241,0.5)",
-              transition: "transform 0.15s, box-shadow 0.15s",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+              transition: "all 0.15s",
             }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "scale(1.2)";
-              e.currentTarget.style.boxShadow = "0 4px 20px rgba(99,102,241,0.7)";
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = COLORS.accent;
+              e.currentTarget.style.background = COLORS.accentDim;
+              e.currentTarget.style.color = COLORS.accent;
             }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
-              e.currentTarget.style.boxShadow = "0 2px 12px rgba(99,102,241,0.5)";
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = COLORS.border;
+              e.currentTarget.style.background = "rgba(26, 26, 30, 0.75)";
+              e.currentTarget.style.color = COLORS.text;
             }}
-          />
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+            </svg>
+          </button>
         )}
 
         <canvas
           id="whiteboard-canvas"
           ref={canvasRef}
+          onDragOver={e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDragEnter={e => {
+            e.preventDefault();
+          }}
+          onDrop={async e => {
+            e.preventDefault();
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const world = screenToWorld(sx, sy, cameraRef.current, canvas.width, canvas.height);
+
+            const dragData = e.dataTransfer.getData("application/json");
+            if (!dragData) return;
+
+            try {
+              const asset = JSON.parse(dragData);
+              const scene = sceneStore.getActiveScene() ?? sceneStore.getManager().scenes.at(-1);
+              if (!scene) return;
+
+              const localTime = sceneStore.getLocalTime();
+
+              if (asset.type === "shape") {
+                const pathData = asset.pathData;
+                const subPaths = splitCompoundPath(pathData);
+                const id = `svg-drag-${Date.now()}`;
+                sceneStore.addSvgObject(scene.id, {
+                  id,
+                  pathData,
+                  subPaths: subPaths.length > 1 ? subPaths : undefined,
+                  x: world.x - 75,
+                  y: world.y - 75,
+                  scaleX: 1.5, scaleY: 1.5,
+                  strokeColor: "#1e293b",
+                  strokeWidth: 3,
+                  fillColor: "transparent",
+                  startTime: localTime,
+                  duration: getPathDrawDuration(pathData),
+                  easing: SvgEasing.easeInOut,
+                });
+                editorStore.select(id, "svg");
+                editorStore.setMode("select");
+
+                // Update recent assets in localStorage
+                try {
+                  const recentSaved = localStorage.getItem("scribe_flow_recent_assets");
+                  const recent = recentSaved ? JSON.parse(recentSaved) : [];
+                  const assetId = `seeded-${asset.name}`;
+                  const filtered = recent.filter((x: any) => x.id !== assetId);
+                  localStorage.setItem("scribe_flow_recent_assets", JSON.stringify([
+                    {
+                      id: assetId,
+                      name: asset.name.replace(/-/g, " "),
+                      pathData,
+                      type: "shape",
+                    },
+                    ...filtered,
+                  ].slice(0, 12)));
+                  window.dispatchEvent(new Event("scribe_recent_assets_update"));
+                } catch {}
+
+              } else if (asset.type === "image") {
+                const src = asset.svgUrl || asset.pathData || "";
+                if (src) {
+                  const id = `img-drag-${Date.now()}`;
+                  sceneStore.addObject(scene.id, {
+                    id, type: "image" as any,
+                    x: world.x - 80, y: world.y - 60,
+                    width: 160, height: 120,
+                    src, fillColor: "transparent",
+                    startTime: localTime, duration: 1.5,
+                    animationType: "fade", easing: "easeOut",
+                  });
+                  editorStore.select(id, "animated");
+                  editorStore.setMode("select");
+
+                  // Save image to recent assets
+                  try {
+                    const recentSaved = localStorage.getItem("scribe_flow_recent_assets");
+                    const recent = recentSaved ? JSON.parse(recentSaved) : [];
+                    const assetId = `local-img-${Date.now()}`;
+                    const filtered = recent.filter((x: any) => x.name !== asset.name);
+                    localStorage.setItem("scribe_flow_recent_assets", JSON.stringify([
+                      {
+                        id: assetId,
+                        name: asset.name,
+                        type: "image",
+                        svgUrl: src,
+                        pendingSave: true,
+                        svgText: src,
+                      },
+                      ...filtered,
+                    ].slice(0, 12)));
+                    window.dispatchEvent(new Event("scribe_recent_assets_update"));
+                  } catch {}
+                }
+              } else if (asset.type === "cloud") {
+                const isImage = asset.cloudAssetType === "image" || asset.pathData?.startsWith("data:image/");
+                const id = isImage ? `img-drag-cloud-${Date.now()}` : `svg-drag-cloud-${Date.now()}`;
+
+                if (isImage) {
+                  sceneStore.addObject(scene.id, {
+                    id,
+                    type: "image" as any,
+                    x: world.x - 80, y: world.y - 60,
+                    width: 160, height: 120,
+                    src: asset.pathData,
+                    fillColor: "transparent",
+                    startTime: localTime, duration: 1.5,
+                    animationType: "fade", easing: "easeOut",
+                  });
+                  editorStore.select(id, "animated");
+                  editorStore.setMode("select");
+                } else {
+                  sceneStore.addSvgObject(scene.id, {
+                    id, pathData: asset.pathData, subPaths: asset.subPaths,
+                    x: world.x - 75, y: world.y - 75,
+                    scaleX: 1.5, scaleY: 1.5,
+                    strokeColor: "#1e293b", strokeWidth: 3, fillColor: "transparent",
+                    startTime: localTime, duration: 1.5, easing: SvgEasing.easeInOut,
+                  });
+                  editorStore.select(id, "svg");
+                  editorStore.setMode("select");
+                }
+
+                // Update recent assets
+                try {
+                  const recentSaved = localStorage.getItem("scribe_flow_recent_assets");
+                  const recent = recentSaved ? JSON.parse(recentSaved) : [];
+                  const filtered = recent.filter((x: any) => x.name !== asset.name);
+                  localStorage.setItem("scribe_flow_recent_assets", JSON.stringify([
+                    {
+                      id: asset.id,
+                      name: asset.name,
+                      type: "cloud",
+                      pathData: isImage ? undefined : asset.pathData,
+                      svgUrl: isImage ? asset.pathData : undefined,
+                      cloudId: asset.id,
+                    },
+                    ...filtered,
+                  ].slice(0, 12)));
+                  window.dispatchEvent(new Event("scribe_recent_assets_update"));
+                } catch {}
+              } else if (asset.type === "icon") {
+                try {
+                  const res = await fetch(asset.svgUrl);
+                  const text = await res.text();
+                  parseAndInsertSvgTextAtCoords(text, world.x, world.y, asset.name);
+                } catch (err) {
+                  console.error("Failed to load icon:", err);
+                }
+              } else if (asset.type === "svg") {
+                if (asset.svgText) {
+                  parseAndInsertSvgTextAtCoords(asset.svgText, world.x, world.y, asset.name);
+                } else if (asset.pathData) {
+                  const id = `svg-drag-${Date.now()}`;
+                  sceneStore.addSvgObject(scene.id, {
+                    id, pathData: asset.pathData,
+                    x: world.x - 75, y: world.y - 75,
+                    scaleX: 1.5, scaleY: 1.5,
+                    strokeColor: "#1e293b", strokeWidth: 3, fillColor: "transparent",
+                    startTime: localTime, duration: 1.5, easing: SvgEasing.easeInOut,
+                  });
+                  editorStore.select(id, "svg");
+                  editorStore.setMode("select");
+                }
+              }
+            } catch (err) {
+              console.error("Drop error:", err);
+            }
+          }}
           style={{
             display: "block", width: "100%", height: "100%",
             outline: "none",
@@ -1653,13 +2090,13 @@ export default function Editor() {
                 fontStyle: inlineEdit.fontStyle,
                 color: "#1e293b",
                 background: "rgba(255,255,255,0.95)",
-                border: "2px solid #6366f1",
+                border: "2px solid #18181b",
                 borderRadius: 4,
                 outline: "none",
                 resize: "both",
                 zIndex: 2000,
                 lineHeight: 1.4,
-                boxShadow: "0 4px 24px rgba(99,102,241,0.3)",
+                boxShadow: "0 4px 24px rgba(0,0,0,0.15)",
                 backdropFilter: "blur(4px)",
               }}
             />
@@ -1695,9 +2132,9 @@ export default function Editor() {
             bottom: 24,
             left: "50%",
             transform: "translateX(-50%)",
-            background: "rgba(20, 25, 32, 0.85)",
+            background: "rgba(26, 26, 30, 0.85)",
             backdropFilter: "blur(12px)",
-            border: `1px solid rgba(99, 102, 241, 0.25)`,
+            border: `1px solid rgba(255, 255, 255, 0.08)`,
             boxShadow: "0 10px 30px rgba(0, 0, 0, 0.5)",
             borderRadius: 16,
             padding: "10px 20px",
@@ -1781,7 +2218,7 @@ export default function Editor() {
           const stage   = ffmpegProgress ? ffmpegProgress.stage : (exportProgress?.status ?? "rendering");
           const label   = stage === "capturing" ? "🎬 Capturing..." : stage === "encoding" ? "⚙️ Encoding..." : stage === "done" ? "✅ Done!" : "Processing...";
           return (
-            <div style={{ position: "absolute", inset: 0, background: "rgba(12,17,23,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+            <div style={{ position: "absolute", inset: 0, background: "rgba(18, 18, 20, 0.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
               <div style={{ background: COLORS.surface, borderRadius: 14, border: `1px solid ${COLORS.border}`, padding: "28px 40px", display: "flex", flexDirection: "column", alignItems: "center", gap: 14, minWidth: 300 }}>
                 <span style={{ color: COLORS.text, fontSize: 15, fontWeight: 600 }}>{label}</span>
                 <div style={{ width: 260, height: 6, background: COLORS.accentDim, borderRadius: 3, overflow: "hidden" }}>
@@ -1837,22 +2274,22 @@ export default function Editor() {
               alignItems: "stretch",
             }}>
               {([
-                { id: "properties", label: "⚙️ Inspect" },
-                { id: "assets", label: "🎨 Art" },
-                { id: "scenes", label: "🎬 Scenes" },
-                { id: "ai", label: "🤖 AI" },
+                { id: "properties", label: "Inspect", icon: <InspectIcon /> },
+                { id: "assets", label: "Art", icon: <ArtIcon /> },
+                { id: "scenes", label: "Scenes", icon: <ScenesIcon /> },
+                { id: "audio", label: "Audio", icon: <AudioIcon /> },
+                { id: "ai", label: "AI", icon: <AiIcon /> },
               ] as const).map(tab => (
                 <button
                   key={tab.id}
                   onClick={() => setRightTab(tab.id)}
                   style={{
                     flex: 1,
-                    padding: "12px 4px",
-                    fontSize: "10px",
+                    padding: "12px 2px",
+                    fontSize: "9px",
                     fontWeight: 600,
-                    fontFamily: "monospace",
                     textTransform: "uppercase",
-                    letterSpacing: "0.05em",
+                    letterSpacing: "0.02em",
                     cursor: "pointer",
                     border: "none",
                     borderBottom: rightTab === tab.id ? `2px solid ${COLORS.accent}` : "2px solid transparent",
@@ -1865,6 +2302,7 @@ export default function Editor() {
                     gap: "4px",
                   }}
                 >
+                  {tab.icon}
                   {tab.label}
                 </button>
               ))}
@@ -1885,6 +2323,8 @@ export default function Editor() {
                   currentTime={currentTime}
                   onSceneSelect={() => editorStore.deselect()}
                 />
+              ) : rightTab === "audio" ? (
+                <AudioLibrary />
               ) : (
                 <AiPanel />
               )}
@@ -1893,24 +2333,43 @@ export default function Editor() {
             {/* Project Saving Actions */}
             <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(0,0,0,0.15)", flexShrink: 0 }}>
               <span style={{ fontSize: 9, color: COLORS.muted }}>Project Actions:</span>
-              <div style={{ display: "flex", gap: 4 }}>
+              <div style={{ display: "flex", gap: 5 }}>
+                <button onClick={onNew} title="New project" style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 6, border: `1px solid ${COLORS.border}`,
+                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 10,
+                  fontWeight: 600, transition: "all 0.15s",
+                }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  New
+                </button>
+
                 <button onClick={onSave} title="Save project" style={{
-                  width: 30, height: 30, borderRadius: 6, border: `1px solid ${COLORS.border}`,
-                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 12,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>💾</button>
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 6, border: `1px solid ${COLORS.border}`,
+                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 10,
+                  fontWeight: 600, transition: "all 0.15s",
+                }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                    <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+                  </svg>
+                  Save
+                </button>
 
                 <button onClick={() => fileInputRef.current?.click()} title="Load project" style={{
-                  width: 30, height: 30, borderRadius: 6, border: `1px solid ${COLORS.border}`,
-                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 12,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>📂</button>
-
-                <button onClick={onNew} title="New project" style={{
-                  width: 30, height: 30, borderRadius: 6, border: `1px solid ${COLORS.border}`,
-                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 12,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>🆕</button>
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 6, border: `1px solid ${COLORS.border}`,
+                  background: COLORS.dimmer, color: COLORS.text, cursor: "pointer", fontSize: 10,
+                  fontWeight: 600, transition: "all 0.15s",
+                }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  Load
+                </button>
               </div>
             </div>
 

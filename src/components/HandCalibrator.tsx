@@ -9,18 +9,18 @@ interface HandCalibratorProps {
 }
 
 const COLORS = {
-  surface:   "#1e293b",
-  surfaceLight: "#2d3748",
-  border:    "#334155",
-  dimmer:    "rgba(255, 255, 255, 0.03)",
-  text:      "#f1f5f9",
-  muted:     "#94a3b8",
-  accent:    "#6366f1",
-  accentDim: "rgba(99, 102, 241, 0.15)",
-  red:       "#ef4444",
-  redDim:    "rgba(239, 68, 68, 0.12)",
-  green:     "#22c55e",
-  greenDim:  "rgba(34, 197, 94, 0.12)",
+  surface:      "#1a1a1e",
+  surfaceLight: "#222226",
+  border:       "rgba(255, 255, 255, 0.08)",
+  dimmer:       "rgba(255, 255, 255, 0.02)",
+  text:         "#f4f4f5",
+  muted:        "#8e8e93",
+  accent:       "#ffffff",
+  accentDim:    "rgba(255, 255, 255, 0.06)",
+  red:          "#ef4444",
+  redDim:       "rgba(239, 68, 68, 0.1)",
+  green:        "#34d399",
+  greenDim:     "rgba(52, 211, 153, 0.1)",
 };
 
 export const HandCalibrator: React.FC<HandCalibratorProps> = ({
@@ -125,7 +125,7 @@ export const HandCalibrator: React.FC<HandCalibratorProps> = ({
         left: 0,
         right: 0,
         bottom: 0,
-        background: "rgba(15, 23, 42, 0.8)",
+        background: "rgba(18, 18, 20, 0.8)",
         backdropFilter: "blur(8px)",
         display: "flex",
         alignItems: "center",

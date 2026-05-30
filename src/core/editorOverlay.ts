@@ -19,7 +19,7 @@ function drawSelectionBox(
 
   // Animated dashed border
   ctx.save();
-  ctx.strokeStyle = isPrimary ? "#6366f1" : "rgba(99,102,241,0.55)";
+  ctx.strokeStyle = isPrimary ? "#18181b" : "rgba(24, 24, 27, 0.4)";
   ctx.lineWidth   = 1.5 / zoom;
   ctx.setLineDash([5 / zoom, 3 / zoom]);
   ctx.lineDashOffset = -(Date.now() / 80) % (8 / zoom);
@@ -31,7 +31,7 @@ function drawSelectionBox(
 
   // Solid inner border
   ctx.setLineDash([]);
-  ctx.strokeStyle = "rgba(99,102,241,0.25)";
+  ctx.strokeStyle = "rgba(24, 24, 27, 0.1)";
   ctx.lineWidth   = 0.5 / zoom;
   ctx.beginPath(); ctx.rect(bx + 1/zoom, by + 1/zoom, bw - 2/zoom, bh - 2/zoom); ctx.stroke();
 
@@ -45,13 +45,13 @@ function drawSelectionBox(
 
   for (const [hx, hy] of handles) {
     // Shadow
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.fillStyle = "rgba(0,0,0,0.1)";
     ctx.fillRect(hx - hs/2 + 0.5/zoom, hy - hs/2 + 0.5/zoom, hs, hs);
     // White fill
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(hx - hs/2, hy - hs/2, hs, hs);
-    // Accent border
-    ctx.strokeStyle = "#6366f1";
+    // Accent border (Sleek dark charcoal handle borders)
+    ctx.strokeStyle = "#18181b";
     ctx.lineWidth   = 1.5 / zoom;
     ctx.strokeRect(hx - hs/2, hy - hs/2, hs, hs);
   }
@@ -60,7 +60,7 @@ function drawSelectionBox(
   ctx.save();
   ctx.scale(1 / zoom, 1 / zoom);
   const lx = bx * zoom, ly = (by * zoom) - 6;
-  ctx.fillStyle = "#6366f1";
+  ctx.fillStyle = "#18181b";
   ctx.font      = "bold 10px monospace";
   ctx.textBaseline = "bottom";
   ctx.fillText(

@@ -6,16 +6,16 @@ import type { TransformKeyframe } from "../core/transformInterpolator";
 import { newKfId, getValuesAtTime } from "../core/transformInterpolator";
 
 const COLORS = {
-  bg:        "#0c1117",
-  surface:   "#141920",
-  border:    "rgba(99,102,241,0.18)",
-  accent:    "#6366f1",
-  accentDim: "rgba(99,102,241,0.12)",
-  text:      "#e2e8f0",
-  muted:     "#64748b",
-  dimmer:    "#1e2530",
-  green:     "#10b981",
-  yellow:    "#f59e0b",
+  bg:        "#121214",
+  surface:   "#1a1a1e",
+  border:    "rgba(255,255,255,0.08)",
+  accent:    "#ffffff",
+  accentDim: "rgba(255,255,255,0.06)",
+  text:      "#f4f4f5",
+  muted:     "#8e8e93",
+  dimmer:    "#222226",
+  green:     "#34d399",
+  yellow:    "#fbbf24",
   red:       "#ef4444",
 };
 
@@ -143,13 +143,42 @@ export function TransformKeyframeEditor({
     sceneStore.updateObjectKeyframe(activeScene.id, selectedObj.id, kfId, patch);
   };
 
+  const Icons = {
+    Transform: () => (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}>
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+        <line x1="12" y1="22.08" x2="12" y2="12" />
+      </svg>
+    ),
+    Plus: () => (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 10, height: 10 }}>
+        <line x1="12" y1="5" x2="12" y2="19" />
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </svg>
+    ),
+    Info: () => (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, flexShrink: 0 }}>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </svg>
+    ),
+    Trash: () => (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 11, height: 11 }}>
+        <polyline points="3 6 5 6 21 6" />
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      </svg>
+    )
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
       {/* Title Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, color: COLORS.green }}>
-          <span style={{ fontSize: 13 }}>🎬</span>
-          <span style={{ fontSize: 9, fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, color: COLORS.green }}>
+          <Icons.Transform />
+          <span style={{ fontSize: 9, fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "sans-serif" }}>
             Transform Keyframes
           </span>
         </div>
@@ -161,28 +190,32 @@ export function TransformKeyframeEditor({
             color: COLORS.bg,
             border: "none",
             borderRadius: 4,
-            padding: "3px 8px",
+            padding: "4px 8px",
             fontSize: 9,
             fontWeight: "bold",
             cursor: "pointer",
-            fontFamily: "monospace",
+            fontFamily: "sans-serif",
             display: "flex",
             alignItems: "center",
-            gap: 3,
+            gap: 4,
             boxShadow: "0 2px 4px rgba(0,0,0,0.15)",
             transition: "opacity 0.15s",
           }}
           onMouseEnter={e => (e.currentTarget.style.opacity = "0.9")}
           onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
         >
-          <span>➕</span> Add Kf
+          <Icons.Plus />
+          <span>Add Keyframe</span>
         </button>
       </div>
 
       {/* Helper text if no keyframes */}
       {kfs.length === 0 && (
-        <div style={{ fontSize: 10, color: COLORS.muted, padding: "8px 10px", background: COLORS.bg, border: `1px dashed ${COLORS.border}`, borderRadius: 6, lineHeight: 1.4 }}>
-          💡 No keyframes defined yet. The object will remain static. Click "Add Kf" to create custom animations (position, scale, rotation, opacity).
+        <div style={{ display: "flex", gap: 8, fontSize: 10, color: COLORS.muted, padding: "8px 10px", background: COLORS.bg, border: `1px dashed ${COLORS.border}`, borderRadius: 6, lineHeight: 1.4, fontFamily: "sans-serif" }}>
+          <div style={{ color: COLORS.accent, display: "flex", alignItems: "center" }}>
+            <Icons.Info />
+          </div>
+          <span>No keyframes defined yet. The object will remain static. Click "Add Keyframe" to create custom animations (position, scale, rotation, opacity).</span>
         </div>
       )}
 
@@ -206,7 +239,7 @@ export function TransformKeyframeEditor({
               {/* Header row */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 4, marginBottom: 2 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontSize: 9, background: COLORS.accentDim, color: COLORS.accent, padding: "1px 4px", borderRadius: 3, fontWeight: "bold" }}>
+                  <span style={{ fontSize: 8, background: COLORS.accentDim, color: COLORS.accent, padding: "1px 4px", borderRadius: 3, fontWeight: "bold", fontFamily: "sans-serif" }}>
                     KF #{idx + 1}
                   </span>
                   <span style={{ fontSize: 10, color: COLORS.text, fontWeight: "bold" }}>
@@ -253,10 +286,13 @@ export function TransformKeyframeEditor({
                       cursor: "pointer",
                       fontSize: 10,
                       padding: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                     }}
                     title="Delete keyframe"
                   >
-                    🗑
+                    <Icons.Trash />
                   </button>
                 </div>
               </div>
@@ -333,7 +369,7 @@ export function TransformKeyframeEditor({
 
               {/* Easing Select */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 8, color: COLORS.muted, textTransform: "uppercase" }}>Transition Easing:</span>
+                <span style={{ fontSize: 8, color: COLORS.muted, textTransform: "uppercase", fontFamily: "sans-serif" }}>Transition Easing:</span>
                 <select
                   value={kf.easing}
                   onChange={e => handleUpdateKeyframe(kf.id, { easing: e.target.value as any })}

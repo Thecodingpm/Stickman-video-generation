@@ -120,6 +120,85 @@ export function lerpAngle(a: number, b: number, t: number): number {
 //  - Between lines: pen lifts smoothly and sweeps to start of next line
 //  - The lineReveals[] array is used by render.ts as the clip mask width per line
 
+interface TextWrapEntry {
+  cacheKey: string;
+  lines: string[];
+}
+const textWrapCache = new Map<string, TextWrapEntry>();
+
+/** Generate standard CSS font string for measuring/rendering text */
+export function getTextFontString(obj: AnimatedObject): string {
+  const style = obj.fontStyle ?? "normal";
+  const weight = obj.fontWeight ?? "normal";
+  const size = obj.fontSize ?? 16;
+  const family = obj.fontFamily ?? "sans-serif";
+  return `${style} ${weight} ${size}px ${family}`;
+}
+
+/** Wraps text into lines exactly matching the render pipeline */
+export function getTextDrawLines(
+  ctx: CanvasRenderingContext2D,
+  obj: AnimatedObject
+): string[] {
+  const content = obj.content ?? "";
+  const wrapWidth = obj.textWrapWidth ?? 0;
+  const fontStr = getTextFontString(obj);
+  const cacheKey = `${content}||${fontStr}||${wrapWidth}`;
+  const cached = textWrapCache.get(obj.id);
+
+  if (cached && cached.cacheKey === cacheKey) return cached.lines;
+
+  ctx.save();
+  ctx.font = fontStr;
+
+  const lines: string[] = [];
+  if (wrapWidth <= 0) {
+    ctx.restore();
+    const split = content.split("\n");
+    textWrapCache.set(obj.id, { cacheKey, lines: split });
+    return split;
+  }
+
+  for (const para of content.split("\n")) {
+    const words = para.split(" ");
+    let line = "";
+
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+
+      if (ctx.measureText(test).width > wrapWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    lines.push(line);
+  }
+
+  ctx.restore();
+  textWrapCache.set(obj.id, { cacheKey, lines });
+  return lines;
+}
+
+/** Get standard exit duration for an animated object */
+export function getObjectExitDuration(obj: AnimatedObject): number {
+  if (!obj.duration) return 0;
+  return obj.exit ? Math.min(obj.exit.duration, obj.duration * 0.9) : 0;
+}
+
+/** Get duration of the active drawing phase (excludes exit transition time) */
+export function getObjectDrawDuration(obj: AnimatedObject): number {
+  const exitDur = getObjectExitDuration(obj);
+  return Math.max(0.01, obj.duration - exitDur);
+}
+
+/** Get draw-phase progress (0 to 1) for the active sketch effect */
+export function getObjectDrawProgress(obj: AnimatedObject, localTime: number): number {
+  const drawDur = getObjectDrawDuration(obj);
+  return Math.min(1, Math.max(0, (localTime - obj.startTime) / drawDur));
+}
+
 export interface TextSolvedState {
   pen: { x: number; y: number; dx: number; dy: number };
   lineReveals: number[];
@@ -280,21 +359,40 @@ export function getCirclePathPoint(
   return { x, y, dx, dy };
 }
 
+export function getImageRevealPoint(
+  obj: AnimatedObject,
+  progress: number
+): { x: number; y: number; dx: number; dy: number } {
+  const w = obj.width ?? 160;
+  const h = obj.height ?? 120;
+  const p = Math.min(1, Math.max(0, progress));
+
+  // Small organic vertical wobble to make the horizontal wipe look natural and hand-drawn
+  const wobbleAmp = h * 0.05;
+  const freq = 4 * Math.PI; // 2 waves across width
+  const wobble = Math.sin(p * freq) * wobbleAmp;
+  const dy = Math.cos(p * freq) * wobbleAmp * freq / w;
+
+  return {
+    x: obj.x + w * p,
+    y: obj.y + h * 0.5 + wobble,
+    dx: 1,
+    dy,
+  };
+}
+
 export function getTextPathPoint(
   ctx: CanvasRenderingContext2D,
   obj: AnimatedObject,
   progress: number
 ): { x: number; y: number; dx: number; dy: number } {
   const fontSize   = obj.fontSize   ?? 16;
-  const fontFamily = obj.fontFamily ?? "sans-serif";
-  const fontWeight = (obj as any).fontWeight ?? "normal";
-  const fontStyle  = (obj as any).fontStyle  ?? "normal";
   const lineH = fontSize * 1.4;
   ctx.save();
-  // Must include weight + style so measureText matches the actual rendered width
-  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+  ctx.font = getTextFontString(obj);
 
-  const solved = solveTextProgress(ctx, obj.content ?? "", progress, fontSize, lineH, obj.x, obj.y);
+  const lines = getTextDrawLines(ctx, obj);
+  const solved = solveTextProgress(ctx, lines.join("\n"), progress, fontSize, lineH, obj.x, obj.y);
   ctx.restore();
 
   return solved.pen;
@@ -332,8 +430,8 @@ export function getSortedDrawElements(_ctx: CanvasRenderingContext2D, scene: Sce
   // Standard shapes (if animationType is "draw")
   if (scene.objects) {
     for (const obj of scene.objects) {
-      const exitDur = obj.exit ? Math.min(obj.exit.duration, obj.duration * 0.9) : 0;
-      const drawDur = Math.max(0.01, obj.duration - exitDur);
+      const drawDur = getObjectDrawDuration(obj);
+      const exitDur = obj.duration - drawDur;
 
       if (obj.animationType === "draw") {
         list.push({
@@ -371,13 +469,14 @@ export function getSortedDrawElements(_ctx: CanvasRenderingContext2D, scene: Sce
  * Handles both simple and compound (multi-sub-path) SVG objects.
  * Respects handOffsetX/Y for fine-tuning tip alignment per object.
  */
-function getTipWorldPos(obj: SvgPathObject, progress: number): { x: number; y: number; dx: number; dy: number } {
+function getTipWorldPos(obj: SvgPathObject, progress: number): { x: number; y: number; dx: number; dy: number; isPause?: boolean } {
   const tip = getSvgTipAtProgress(obj, progress);
   return {
     x:  tip.x + (obj.handOffsetX ?? 0),
     y:  tip.y + (obj.handOffsetY ?? 0),
     dx: tip.dx,
     dy: tip.dy,
+    isPause: tip.isPause,
   };
 }
 
@@ -443,6 +542,8 @@ function getEraserPoint(
 let lastHandPos = { x: 0, y: 0 };
 let lastHandAngle = HAND_ANGLE;
 let activeLerpFactor = 0.5; // Smooth gear shifting tracking coefficient
+let lastSceneId: string | null = null;
+let lastLocalTime = 0;
 
 // ── Helper to apply object-level keyframe transform to hand coordinates ────────
 function applyTransformToPoint(
@@ -529,6 +630,24 @@ export function drawUnifiedHand(
 ): void {
   if (!hand.loaded || !hand.image || !scene) return;
 
+  // ── HAND STATE RESET TRIGGERS ──
+  // Resets tracking position instantly when scene changes or localTime jumps (e.g. timeline scrubbing/looping)
+  const sceneId = scene.id;
+  const timeJump = Math.abs(localTime - lastLocalTime);
+
+  if (
+    sceneId !== lastSceneId ||
+    localTime < lastLocalTime ||
+    timeJump > 0.5
+  ) {
+    lastHandPos = { x: 0, y: 0 };
+    lastHandAngle = HAND_ANGLE;
+    activeLerpFactor = 0.5;
+  }
+
+  lastSceneId = sceneId;
+  lastLocalTime = localTime;
+
   const elements = getSortedDrawElements(ctx, scene);
   if (elements.length === 0) return;
 
@@ -566,7 +685,8 @@ export function drawUnifiedHand(
       // Sample start of first element
       let startPoint = { x: 0, y: 0, dx: 1, dy: 0 };
       if (first.type === "svg") startPoint = getTipWorldPos(first.raw as SvgPathObject, 0);
-      else if (first.type === "rect" || first.type === "image") startPoint = getRectPathPoint(first.raw as AnimatedObject, 0);
+      else if (first.type === "image") startPoint = getImageRevealPoint(first.raw as AnimatedObject, 0);
+      else if (first.type === "rect") startPoint = getRectPathPoint(first.raw as AnimatedObject, 0);
       else if (first.type === "circle") startPoint = getCirclePathPoint(first.raw as AnimatedObject, 0);
       else if (first.type === "text") startPoint = getTextPathPoint(ctx, first.raw as AnimatedObject, 0);
 
@@ -590,7 +710,8 @@ export function drawUnifiedHand(
       let endPoint = { x: 0, y: 0, dx: 1, dy: 0 };
       if (last.isErase) endPoint = getEraserPoint(ctx, last.raw as AnimatedObject, 1);
       else if (last.type === "svg") endPoint = getTipWorldPos(last.raw as SvgPathObject, 1);
-      else if (last.type === "rect" || last.type === "image") endPoint = getRectPathPoint(last.raw as AnimatedObject, 1);
+      else if (last.type === "image") endPoint = getImageRevealPoint(last.raw as AnimatedObject, 1);
+      else if (last.type === "rect") endPoint = getRectPathPoint(last.raw as AnimatedObject, 1);
       else if (last.type === "circle") endPoint = getCirclePathPoint(last.raw as AnimatedObject, 1);
       else if (last.type === "text") endPoint = getTextPathPoint(ctx, last.raw as AnimatedObject, 1);
 
@@ -638,11 +759,14 @@ export function drawUnifiedHand(
         // Hand hidden for this object: park off-screen so it glides away invisibly
         visible = false;
       } else {
-        let pt = { x: 0, y: 0, dx: 1, dy: 0 };
+        let pt: { x: number; y: number; dx: number; dy: number; isPause?: boolean } = { x: 0, y: 0, dx: 1, dy: 0, isPause: false };
         if (el.type === "svg") {
           const svgObj = el.raw as SvgPathObject;
           const svgProgress = getSvgProgress(svgObj, localTime) ?? 0;
           pt = getTipWorldPos(svgObj, svgProgress);
+          if (pt.isPause) {
+            activeDrawing = false; // Glide smoothly in the air using base travel LERP
+          }
         } else {
           // For rect/circle/image draw animations, make hand progress match render.ts eased entry progress exactly.
           // For text, keep using raw progress (which matches render.ts).
@@ -652,7 +776,9 @@ export function drawUnifiedHand(
             const rawProgress = (localTime - el.startTime) / el.duration;
             const easingFn = Easing[(el.raw as AnimatedObject).easing || "easeOut"] || Easing.easeOut;
             const easedProgress = easingFn(Math.min(1, Math.max(0, rawProgress)));
-            if (el.type === "rect" || el.type === "image") {
+            if (el.type === "image") {
+              pt = getImageRevealPoint(el.raw as AnimatedObject, easedProgress);
+            } else if (el.type === "rect") {
               pt = getRectPathPoint(el.raw as AnimatedObject, easedProgress);
             } else if (el.type === "circle") {
               pt = getCirclePathPoint(el.raw as AnimatedObject, easedProgress);
@@ -678,18 +804,12 @@ export function drawUnifiedHand(
         }
       }
 
-      // Ensure a minimum travel duration of 0.35s to prevent teleports/high-speed skipping
-      const rawGap = next.startTime - prev.endTime;
-      const gapDur = Math.max(0.35, rawGap);
-      
-      // Calculate progress safely clamped between 0 and 1
-      const progress = easeInOutCubic(Math.min(1, Math.max(0, (localTime - prev.endTime) / gapDur)));
-
       // Previous end point
       let prevEnd = { x: 0, y: 0, dx: 1, dy: 0 };
       if (prev.isErase) prevEnd = getEraserPoint(ctx, prev.raw as AnimatedObject, 1);
       else if (prev.type === "svg") prevEnd = getTipWorldPos(prev.raw as SvgPathObject, 1);
-      else if (prev.type === "rect" || prev.type === "image") prevEnd = getRectPathPoint(prev.raw as AnimatedObject, 1);
+      else if (prev.type === "image") prevEnd = getImageRevealPoint(prev.raw as AnimatedObject, 1);
+      else if (prev.type === "rect") prevEnd = getRectPathPoint(prev.raw as AnimatedObject, 1);
       else if (prev.type === "circle") prevEnd = getCirclePathPoint(prev.raw as AnimatedObject, 1);
       else if (prev.type === "text") prevEnd = getTextPathPoint(ctx, prev.raw as AnimatedObject, 1);
 
@@ -698,20 +818,36 @@ export function drawUnifiedHand(
       // Next start point
       let nextStart = { x: 0, y: 0, dx: 1, dy: 0 };
       if (next.type === "svg") nextStart = getTipWorldPos(next.raw as SvgPathObject, 0);
-      else if (next.type === "rect" || next.type === "image") nextStart = getRectPathPoint(next.raw as AnimatedObject, 0);
+      else if (next.type === "image") nextStart = getImageRevealPoint(next.raw as AnimatedObject, 0);
+      else if (next.type === "rect") nextStart = getRectPathPoint(next.raw as AnimatedObject, 0);
       else if (next.type === "circle") nextStart = getCirclePathPoint(next.raw as AnimatedObject, 0);
       else if (next.type === "text") nextStart = getTextPathPoint(ctx, next.raw as AnimatedObject, 0);
 
       nextStart = applyTransformToPoint(nextStart, next.raw, 0);
 
-      targetX = lerp(prevEnd.x, nextStart.x, progress);
-      targetY = lerp(prevEnd.y, nextStart.y, progress);
-      strokeAngle = Math.atan2(nextStart.y - prevEnd.y, nextStart.x - prevEnd.x);
+      const rawGap = next.startTime - prev.endTime;
+      const dist = Math.hypot(nextStart.x - prevEnd.x, nextStart.y - prevEnd.y);
 
-      // Nudge hand tip up-and-right (lift offset) during travel phase
-      const liftHeight = Math.sin(progress * Math.PI);
-      liftOffset.x = liftHeight * (12 / cameraZoom);
-      liftOffset.y = -liftHeight * (18 / cameraZoom);
+      if (rawGap < 0.15 && dist > 80) {
+        // Fast transition gap with large distance: hide and snap instantly
+        visible = false;
+        targetX = nextStart.x;
+        targetY = nextStart.y;
+        strokeAngle = Math.atan2(nextStart.y - prevEnd.y, nextStart.x - prevEnd.x);
+        lastHandPos = { x: nextStart.x, y: nextStart.y };
+      } else {
+        const gapDur = Math.max(0.01, rawGap);
+        const progress = easeInOutCubic(Math.min(1, Math.max(0, (localTime - prev.endTime) / gapDur)));
+
+        targetX = lerp(prevEnd.x, nextStart.x, progress);
+        targetY = lerp(prevEnd.y, nextStart.y, progress);
+        strokeAngle = Math.atan2(nextStart.y - prevEnd.y, nextStart.x - prevEnd.x);
+
+        // Nudge hand tip up-and-right (lift offset) during travel phase
+        const liftHeight = Math.sin(progress * Math.PI);
+        liftOffset.x = liftHeight * (12 / cameraZoom);
+        liftOffset.y = -liftHeight * (18 / cameraZoom);
+      }
     }
   }
 
@@ -742,11 +878,17 @@ export function drawUnifiedHand(
   // Smooth gear shifting LERP factor (interpolate activeLerpFactor to avoid visual sudden jerks)
   activeLerpFactor = activeLerpFactor + (targetLerp - activeLerpFactor) * 0.15;
 
-  if (lastHandPos.x === 0 && lastHandPos.y === 0) {
+  if (activeDrawing && !isText) {
+    // Snap instantly during active SVG/shape drawing to prevent any visible lag behind ink lines
     lastHandPos = { x: finalX, y: finalY };
+    activeLerpFactor = targetLerp; // Sync factor instantly
   } else {
-    lastHandPos.x = lastHandPos.x + (finalX - lastHandPos.x) * activeLerpFactor;
-    lastHandPos.y = lastHandPos.y + (finalY - lastHandPos.y) * activeLerpFactor;
+    if (lastHandPos.x === 0 && lastHandPos.y === 0) {
+      lastHandPos = { x: finalX, y: finalY };
+    } else {
+      lastHandPos.x = lastHandPos.x + (finalX - lastHandPos.x) * activeLerpFactor;
+      lastHandPos.y = lastHandPos.y + (finalY - lastHandPos.y) * activeLerpFactor;
+    }
   }
 
   // Per-hand tilt: each image has its natural pen angle baked in.

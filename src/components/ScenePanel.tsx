@@ -8,14 +8,14 @@ import { sceneStore } from "../store/sceneStore";
 import type { Scene } from "../core/sceneManager";
 
 const COLORS = {
-  bg:        "#0c1117",
-  surface:   "#141920",
-  border:    "rgba(99,102,241,0.18)",
-  accent:    "#6366f1",
-  accentDim: "rgba(99,102,241,0.12)",
-  text:      "#e2e8f0",
-  muted:     "#64748b",
-  dimmer:    "#1e2530",
+  bg:        "#121214",
+  surface:   "#1a1a1e",
+  border:    "rgba(255, 255, 255, 0.08)",
+  accent:    "#ffffff",
+  accentDim: "rgba(255, 255, 255, 0.06)",
+  text:      "#f4f4f5",
+  muted:     "#8e8e93",
+  dimmer:    "#222226",
   danger:    "#ef4444",
 };
 
@@ -66,7 +66,7 @@ export function ScenePanel({ currentTime: _currentTime, onSceneSelect }: ScenePa
             sceneStore.seek(sceneStore.getManager().scenes.find(s => s.id === id)?.startTime ?? 0);
           }}
           title="Add scene"
-          style={{ width: 18, height: 18, borderRadius: 4, border: "none", background: COLORS.accent, color: "#fff", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}
+          style={{ width: 18, height: 18, borderRadius: 4, border: "none", background: COLORS.accent, color: "#08080a", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}
         >+</button>
       </div>
 
@@ -91,7 +91,7 @@ export function ScenePanel({ currentTime: _currentTime, onSceneSelect }: ScenePa
                 padding: "7px 10px",
                 borderBottom: `1px solid ${COLORS.border}`,
                 borderLeft: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
-                background: isDragTarget ? COLORS.accentDim : isActive ? "rgba(99,102,241,0.08)" : "transparent",
+                background: isDragTarget ? COLORS.accentDim : isActive ? COLORS.accentDim : "transparent",
                 cursor: "pointer",
                 transition: "background 0.1s",
               }}

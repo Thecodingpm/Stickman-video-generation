@@ -4,71 +4,21 @@ import type { Scene } from "./sceneManager";
 import { getObjectRenderState, lerp } from "./timeline";
 import type { AnimatedObject } from "./timeline";
 import { drawAllSvgPaths } from "./svgPath";
-import { drawUnifiedHand, getRectPathPoint, getCirclePathPoint, solveTextProgress } from "./handDrawer";
+import {
+  drawUnifiedHand,
+  getRectPathPoint,
+  getCirclePathPoint,
+  solveTextProgress,
+  getTextDrawLines,
+  getTextFontString,
+  getObjectDrawProgress
+} from "./handDrawer";
 import type { HandState } from "./handDrawer";
 import { interpolateTransform } from "./transformInterpolator";
 import type { TransformState } from "./transformInterpolator";
 
 // Simple image loader cache to draw uploaded images at 60fps without lag
 export const imageCache: Map<string, HTMLImageElement> = new Map();
-
-// ── Text wrap cache ────────────────────────────────────────────────────────────
-// Perf fix: wrapLines + measureText are expensive. Cache per object keyed by the
-// values that affect layout. Cache is invalidated when any key property changes.
-interface TextWrapEntry {
-  cacheKey: string;
-  lines: string[];
-}
-const textWrapCache: Map<string, TextWrapEntry> = new Map();
-
-function wrapTextLines(
-  ctx: CanvasRenderingContext2D,
-  content: string,
-  wrapWidth: number,
-): string[] {
-  if (wrapWidth <= 0) return content.split("\n");
-
-  const lines: string[] = [];
-
-  for (const para of content.split("\n")) {
-    const words = para.split(" ");
-    let line = "";
-
-    for (const word of words) {
-      const test = line ? `${line} ${word}` : word;
-
-      if (ctx.measureText(test).width > wrapWidth && line) {
-        lines.push(line);
-        line = word;
-      } else {
-        line = test;
-      }
-    }
-
-    lines.push(line);
-  }
-
-  return lines;
-}
-
-function getCachedWrappedLines(
-  ctx: CanvasRenderingContext2D,
-  obj: AnimatedObject,
-): string[] {
-  const content = obj.content ?? "";
-  const wrapWidth = obj.textWrapWidth ?? 0;
-  const fontStr = `${obj.fontStyle ?? "normal"} ${obj.fontWeight ?? "normal"} ${obj.fontSize ?? 16}px ${obj.fontFamily ?? "sans-serif"}`;
-  const cacheKey = `${content}||${fontStr}||${wrapWidth}`;
-  const cached = textWrapCache.get(obj.id);
-
-  if (cached && cached.cacheKey === cacheKey) return cached.lines;
-
-  ctx.font = fontStr;
-  const lines = wrapTextLines(ctx, content, wrapWidth);
-
-  textWrapCache.set(obj.id, { cacheKey, lines });
-  return lines;
-}
 
 
 function getCachedImage(src: string): HTMLImageElement | null {
@@ -185,8 +135,7 @@ function renderAnimatedObject(
 
   const ep = state.entryProgress;  // 0→1 during entry (eased)
   const xp = state.exitProgress;   // 0→1 during exit
-  // Raw linear progress — used for "draw" so hand & clip mask stay in perfect sync
-  const rawEp = obj.duration > 0 ? Math.min(1, Math.max(0, (localTime - obj.startTime) / obj.duration)) : 1;
+
 
   // ── Entry animation ──
   switch (obj.animationType) {
@@ -332,7 +281,7 @@ function renderAnimatedObject(
       ctx.rect(cx - r - 20, eraserY, 2 * r + 40, 2 * r + 40);
     } else if (obj.type === "text") {
       const fontSize  = obj.fontSize ?? 16;
-      const exitLines = getCachedWrappedLines(ctx, obj);
+      const exitLines = getTextDrawLines(ctx, obj);
       const lineH   = fontSize * 1.4;
       const totalH  = exitLines.length * lineH;
       const eraserY = cy + xp * totalH;
@@ -436,19 +385,16 @@ function renderAnimatedObject(
       ctx.shadowColor  = "transparent";
       ctx.shadowBlur   = 0;
       const fontSize   = obj.fontSize ?? 16;
-      const fontFamily = obj.fontFamily ?? "sans-serif";
-      const fontWeight = obj.fontWeight ?? "normal";
-      const fontStyle  = obj.fontStyle  ?? "normal";
       const textAlign  = obj.textAlign  ?? "left";
       const wrapWidth  = obj.textWrapWidth ?? 0;
-      ctx.font         = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+      ctx.font         = getTextFontString(obj);
       ctx.fillStyle    = obj.fillColor ?? "#1e293b";
       ctx.textBaseline = "top";
       // textAlign is set per-branch: "left" during draw animation, user-chosen after
       const lineH      = fontSize * 1.4;
 
-      // Perf fix: use cached wrapped lines — no measureText every frame
-      const allLines = getCachedWrappedLines(ctx, obj);
+      // Unified text wrapping solver
+      const allLines = getTextDrawLines(ctx, obj);
 
       // X position offset based on alignment
       const alignOffsetX = textAlign === "center" ? (wrapWidth / 2) : textAlign === "right" ? wrapWidth : 0;
@@ -459,8 +405,8 @@ function renderAnimatedObject(
         // and hand position are in sync regardless of final textAlign setting.
         ctx.textAlign = "left";
         const drawLines = allLines;
-        const drawContent = drawLines.join("\n");
-        const solved = solveTextProgress(ctx, drawContent, rawEp, fontSize, lineH, cx, cy);
+        const drawProgress = getObjectDrawProgress(obj, localTime);
+        const solved = solveTextProgress(ctx, drawLines.join("\n"), drawProgress, fontSize, lineH, cx, cy);
 
         for (let i = 0; i < drawLines.length; i++) {
           const lineDrawnWidth = solved.lineReveals[i] ?? 0;
@@ -556,16 +502,16 @@ function drawSceneHUD(
 ): void {
   ctx.save();
   const px = 16, py = 16, pw = 320, ph = 90;
-  ctx.fillStyle   = "rgba(15,23,42,0.82)";
-  ctx.strokeStyle = "rgba(99,102,241,0.45)";
+  ctx.fillStyle   = "rgba(26, 26, 30, 0.85)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.085)";
   ctx.lineWidth   = 1;
   ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 10); ctx.fill(); ctx.stroke();
 
-  ctx.fillStyle = "#94a3b8"; ctx.font = "11px monospace"; ctx.textBaseline = "top";
+  ctx.fillStyle = "#f4f4f5"; ctx.font = "11px monospace"; ctx.textBaseline = "top";
   ctx.fillText(`Scene   ${scene?.name ?? "—"}`, px + 14, py + 12);
   ctx.fillText(`Camera  x:${camera.x.toFixed(1)}  y:${camera.y.toFixed(1)}  zoom:${camera.zoom.toFixed(3)}`, px + 14, py + 30);
   ctx.fillText(`Time    ${globalTime.toFixed(2)}s / ${totalDuration.toFixed(1)}s`, px + 14, py + 48);
-  ctx.fillStyle = "#334155";
+  ctx.fillStyle = "#71717a";
   ctx.fillText("Space play/pause · Drag pan · Wheel zoom", px + 14, py + 68);
   ctx.restore();
 }
@@ -617,8 +563,4 @@ export function renderFrame(
 
   ctx.restore();
 
-  // HUD
-  if (!isExport) {
-    drawSceneHUD(ctx, camera, scene, globalTime ?? 0, totalDuration ?? 0, W);
-  }
 }

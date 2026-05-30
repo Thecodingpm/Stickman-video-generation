@@ -1,4 +1,4 @@
-export type SelectedObjectType = "animated" | "svg";
+export type SelectedObjectType = "animated" | "svg" | "audio";
 
 export interface SelectedObject {
   id:   string;
